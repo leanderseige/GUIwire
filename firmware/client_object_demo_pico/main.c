@@ -82,8 +82,8 @@ int main(void) {
         text.y = 52u;
         text.w = 180u;
         text.h = 20u;
-        text.fg = gui2c_rgb565(0, 0, 0);
-        text.bg = gui2c_rgb565(255, 0, 0);
+        text.fg = gui2c_rgb565(255, 255, 255);
+        text.bg = gui2c_rgb565(0, 0, 64);
         text.flags = 0u;
         text.zoom = 2u;
         text.text = line;

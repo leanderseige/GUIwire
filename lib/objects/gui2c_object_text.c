@@ -5,6 +5,31 @@
 #include "lib/server/gui2c_server_objects.h"
 #include "lib/renderer/gui2c_renderer_text.h"
 
+#define GUI2C_TEXT_CELL_WIDTH   6u
+
+static uint16_t text_padding(const gui2c_text_object_t *obj) {
+    return (uint16_t)(obj->zoom ? obj->zoom : 1u);
+}
+
+static uint16_t text_content_x(const gui2c_text_object_t *obj) {
+    return (uint16_t)(obj->x + text_padding(obj));
+}
+
+static uint16_t text_content_y(const gui2c_text_object_t *obj) {
+    return (uint16_t)(obj->y + text_padding(obj));
+}
+
+static uint16_t text_content_w(const gui2c_text_object_t *obj) {
+    uint16_t padding = text_padding(obj);
+    return (obj->w > padding) ? (uint16_t)(obj->w - padding) : 0u;
+}
+
+static uint16_t text_content_h(const gui2c_text_object_t *obj) {
+    uint16_t padding = text_padding(obj);
+    uint16_t vertical_padding = (uint16_t)(padding * 2u);
+    return (obj->h > vertical_padding) ? (uint16_t)(obj->h - vertical_padding) : 0u;
+}
+
 static gui2c_status_t parse_text_desc(const uint8_t *payload, uint16_t payload_len, gui2c_text_desc_t *out_desc, char *text_buf, size_t text_buf_len) {
     uint8_t text_len;
     if (!payload || !out_desc || !text_buf) return GUI2C_STATUS_ERR_INVALID_ARGUMENT;
@@ -46,38 +71,51 @@ static gui2c_status_t create_or_replace_text(gui2c_server_t *server, const gui2c
 
 gui2c_status_t gui2c_object_text_draw(gui2c_server_t *server, const gui2c_text_object_t *obj) {
     size_t i, len;
+    uint16_t clip_x, clip_y, clip_w, clip_h;
     if (!server || !obj || !obj->in_use) return GUI2C_STATUS_ERR_INVALID_ARGUMENT;
     if ((obj->flags & GUI2C_TEXT_FLAG_BG_TRANSPARENT) == 0u) {
         gui2c_status_t st = gui2c_server_fill_bg(server, obj->x, obj->y, obj->w, obj->h, obj->bg);
         if (st != GUI2C_STATUS_OK) return st;
     }
+    clip_x = text_content_x(obj);
+    clip_y = text_content_y(obj);
+    clip_w = text_content_w(obj);
+    clip_h = text_content_h(obj);
+    if (clip_w == 0u || clip_h == 0u) return GUI2C_STATUS_OK;
     len = strlen(obj->text);
     for (i = 0; i < len; ++i) {
-        uint16_t base_x = (uint16_t)(obj->x + i * 6u * obj->zoom);
-        if (base_x >= (uint16_t)(obj->x + obj->w)) break;
-        { gui2c_status_t st = gui2c_renderer_draw_glyph_5x7_clipped(server->cfg.renderer, server->cfg.renderer_ctx, obj->x, obj->y, obj->w, obj->h, base_x, obj->y, obj->zoom, (unsigned char)obj->text[i], obj->fg); if (st != GUI2C_STATUS_OK) return st; }
+        uint16_t base_x = (uint16_t)(clip_x + i * GUI2C_TEXT_CELL_WIDTH * obj->zoom);
+        if (base_x >= (uint16_t)(clip_x + clip_w)) break;
+        { gui2c_status_t st = gui2c_renderer_draw_glyph_5x7_clipped(server->cfg.renderer, server->cfg.renderer_ctx, clip_x, clip_y, clip_w, clip_h, base_x, clip_y, obj->zoom, (unsigned char)obj->text[i], obj->fg); if (st != GUI2C_STATUS_OK) return st; }
     }
     return GUI2C_STATUS_OK;
 }
 
 static gui2c_status_t redraw_changed_cells(gui2c_server_t *server, const gui2c_text_object_t *old_obj, const gui2c_text_object_t *new_obj) {
     size_t old_len, new_len, max_len, i;
+    uint16_t clip_x, clip_y, clip_w, clip_h;
     if (!server || !new_obj) return GUI2C_STATUS_ERR_INVALID_ARGUMENT;
     if (!old_obj || old_obj->x != new_obj->x || old_obj->y != new_obj->y || old_obj->w != new_obj->w || old_obj->h != new_obj->h || old_obj->fg != new_obj->fg || old_obj->bg != new_obj->bg || old_obj->flags != new_obj->flags || old_obj->zoom != new_obj->zoom) {
         return gui2c_object_text_draw(server, new_obj);
     }
+    clip_x = text_content_x(new_obj);
+    clip_y = text_content_y(new_obj);
+    clip_w = text_content_w(new_obj);
+    clip_h = text_content_h(new_obj);
+    if (clip_w == 0u || clip_h == 0u) return GUI2C_STATUS_OK;
     old_len = strlen(old_obj->text); new_len = strlen(new_obj->text); max_len = old_len > new_len ? old_len : new_len;
     for (i = 0; i < max_len; ++i) {
         char old_ch = (i < old_len) ? old_obj->text[i] : ' ';
         char new_ch = (i < new_len) ? new_obj->text[i] : ' ';
         if (old_ch != new_ch) {
-            uint16_t base_x = (uint16_t)(new_obj->x + i * 6u * new_obj->zoom);
+            uint16_t base_x = (uint16_t)(clip_x + i * GUI2C_TEXT_CELL_WIDTH * new_obj->zoom);
+            if (base_x >= (uint16_t)(clip_x + clip_w)) break;
             if ((new_obj->flags & GUI2C_TEXT_FLAG_BG_TRANSPARENT) == 0u) {
-                gui2c_status_t st = gui2c_server_fill_bg(server, base_x, new_obj->y, (uint16_t)(6u * new_obj->zoom), (uint16_t)(8u * new_obj->zoom), new_obj->bg);
+                gui2c_status_t st = gui2c_server_fill_bg(server, base_x, clip_y, (uint16_t)(GUI2C_TEXT_CELL_WIDTH * new_obj->zoom), clip_h, new_obj->bg);
                 if (st != GUI2C_STATUS_OK) return st;
             }
             if (new_ch != ' ') {
-                gui2c_status_t st = gui2c_renderer_draw_glyph_5x7_clipped(server->cfg.renderer, server->cfg.renderer_ctx, new_obj->x, new_obj->y, new_obj->w, new_obj->h, base_x, new_obj->y, new_obj->zoom, (unsigned char)new_ch, new_obj->fg);
+                gui2c_status_t st = gui2c_renderer_draw_glyph_5x7_clipped(server->cfg.renderer, server->cfg.renderer_ctx, clip_x, clip_y, clip_w, clip_h, base_x, clip_y, new_obj->zoom, (unsigned char)new_ch, new_obj->fg);
                 if (st != GUI2C_STATUS_OK) return st;
             }
         }
