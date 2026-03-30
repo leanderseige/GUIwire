@@ -2,6 +2,8 @@
 
 This guide describes the recommended order for adding a new GUI object type such as a line, icon or bitmap.
 
+The public protocol should stay hardware-agnostic. Memory limits, reduced internal color formats and display-specific fast paths belong on the server side behind a target-profile or display-specific implementation detail.
+
 ## 1. Extend the protocol
 
 Edit `include/gui2c/gui2c_protocol.h`:
@@ -11,6 +13,8 @@ Edit `include/gui2c/gui2c_protocol.h`:
 - add any object-specific flags
 
 This descriptor is the contract between client and server.
+
+Keep that contract generic. Do not expose display-controller details such as internal framebuffer formats or per-target storage limits in the public descriptor unless they are truly part of the portable object model.
 
 ## 2. Extend the client API
 
@@ -34,6 +38,8 @@ Edit `include/gui2c/gui2c_server.h`:
 - add storage for that object type to `gui2c_server_t`
 
 For example, the current codebase keeps separate text and rect object arrays.
+
+If the new object needs sizable caches or hardware-specific limits, introduce those through a server-side target profile rather than through `gui2c_protocol.h`.
 
 ## 4. Add allocation and lookup helpers
 
@@ -107,6 +113,8 @@ Then optimize:
 - skip redraws when only color changes inside identical geometry
 - batch SPI transfers for large fills
 - avoid full-screen redraws unless necessary
+- keep generic object semantics separate from display-specific fast paths
+- put target-specific limits and internal buffer formats behind server profile headers or display-specific modules
 
 ## Checklist
 

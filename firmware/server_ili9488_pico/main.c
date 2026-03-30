@@ -17,7 +17,7 @@ typedef struct {
     gui2c_pico_spi_bus_t spi_bus;
 } server_hal_t;
 
-#define GUI2C_I2C_RX_QUEUE_LEN 4u
+#define GUI2C_I2C_RX_QUEUE_LEN 16u
 
 typedef struct {
     uint16_t len;
@@ -212,11 +212,16 @@ int main(void) {
 
     while (1) {
         size_t packet_len;
+        static uint32_t last_reported_drops = 0u;
 
         if (board_i2c_slave_pop_packet(rxbuf, sizeof(rxbuf), &packet_len)) {
             gui2c_status_t st = gui2c_server_handle_packet(&server, rxbuf, packet_len);
             printf("Received packet (%u bytes): %s\n", (unsigned)packet_len, gui2c_status_str(st));
         } else {
+            if (g_i2c_packets_dropped != last_reported_drops) {
+                last_reported_drops = g_i2c_packets_dropped;
+                printf("I2C packets dropped: %lu\n", (unsigned long)last_reported_drops);
+            }
             tight_loop_contents();
         }
     }

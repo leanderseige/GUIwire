@@ -65,9 +65,6 @@ Payload layout:
 
 Same payload layout as `CREATE_TEXT`.
 
-Current server behavior:
-if the object does not yet exist, the current implementation creates it.
-
 ### `DESTROY_OBJECT` (`0x13`)
 
 Payload:
@@ -93,8 +90,116 @@ Payload layout:
 
 Same payload layout as `CREATE_RECT`.
 
+### `CREATE_LINE` (`0x16`)
+
+Payload layout:
+
+- `u16 object_id`
+- `u16 x1`
+- `u16 y1`
+- `u16 x2`
+- `u16 y2`
+- `u16 fg`
+- `u16 bg`
+- `u8 thickness`
+
+### `UPDATE_LINE` (`0x17`)
+
+Same payload layout as `CREATE_LINE`.
+
+### `CREATE_BAR` (`0x1A`)
+
+Payload layout:
+
+- `u16 object_id`
+- `u16 x`
+- `u16 y`
+- `u16 w`
+- `u16 h`
+- `u16 fg`
+- `u16 bg`
+- `u16 value`
+- `u8 direction`
+
+### `UPDATE_BAR` (`0x1B`)
+
+Payload layout:
+
+- `u16 object_id`
+- `u16 value`
+
+### `CREATE_RING` (`0x1C`)
+
+Payload layout:
+
+- `u16 object_id`
+- `u16 cx`
+- `u16 cy`
+- `u16 radius`
+- `u16 inner_radius`
+- `u16 opening_angle_deg`
+- `u16 bg`
+- `u16 fg_active`
+- `u16 fg_inactive`
+- `u16 value`
+
+### `UPDATE_RING` (`0x1D`)
+
+Payload layout:
+
+- `u16 object_id`
+- `u16 value`
+
+### `CREATE_WAVEFORM` (`0x18`)
+
+Payload layout:
+
+- `u16 object_id`
+- `u16 x`
+- `u16 y`
+- `u16 w`
+- `u16 h`
+- `u16 border`
+- `u16 bg`
+- `u8 flags`
+- `u8 wave_count`
+- `wave_count * u16 wave_color`
+
+### `UPDATE_WAVEFORM` (`0x19`)
+
+Common payload prefix:
+
+- `u16 object_id`
+- `u8 mode`
+
+Mode `GUI2C_WAVEFORM_UPDATE_MODE_FULL_REPLACEMENT` (`0x01`):
+
+- `u8 wave_index`
+- `u8 sample_count`
+- `sample_count * u16 sample`
+
+Mode `GUI2C_WAVEFORM_UPDATE_MODE_SHIFTING` (`0x02`):
+
+- `u8 wave_index`
+- `u16 x_advance`
+- `u16 sample`
+
+Mode `GUI2C_WAVEFORM_UPDATE_MODE_SHIFTING_MULTI` (`0x03`):
+
+- `u8 wave_count`
+- `u16 x_advance`
+- repeated `wave_count` times:
+  - `u8 wave_index`
+  - `u16 sample`
+
 Current server behavior:
-if the object does not yet exist, the current implementation creates it.
+
+- `CREATE_TEXT`, `CREATE_RECT`, `CREATE_LINE`, `CREATE_BAR`, `CREATE_RING` and `CREATE_WAVEFORM` are idempotent
+- resending a matching `CREATE_*` for an already existing object returns `OK` and leaves the object unchanged
+- `UPDATE_TEXT`, `UPDATE_RECT` and `UPDATE_LINE` can still create a missing object from the full descriptor payload
+- `UPDATE_BAR` requires that the bar object already exists, because the update payload contains only `object_id` and `value`
+- `UPDATE_RING` requires that the ring object already exists, because the update payload contains only `object_id` and `value`
+- `UPDATE_WAVEFORM` requires that the waveform object already exists, because the update payload does not contain geometry, border or color configuration
 
 ## Colors
 
@@ -116,7 +221,7 @@ When clear, the text object's `bg` color is used to fill its bounding box.
 
 Recommended value:
 
-- `0x04`
+- `0x03`
 
 ## Rect flags
 
@@ -136,6 +241,76 @@ Value:
 
 When set, a 1-pixel border is drawn inside the rectangle bounds.
 
+## Bar directions
+
+### `GUI2C_BAR_DIRECTION_TOP_TO_BOTTOM`
+
+Value:
+
+- `0x00`
+
+### `GUI2C_BAR_DIRECTION_BOTTOM_TO_TOP`
+
+Value:
+
+- `0x01`
+
+### `GUI2C_BAR_DIRECTION_LEFT_TO_RIGHT`
+
+Value:
+
+- `0x02`
+
+### `GUI2C_BAR_DIRECTION_RIGHT_TO_LEFT`
+
+Value:
+
+- `0x03`
+
+## Ring semantics
+
+- `value` is interpreted as a `u16` fraction of the visible sweep
+- filling starts at the lower apex of the circle and proceeds clockwise
+- if `opening_angle_deg` is non-zero, that angle is left open symmetrically around the lower apex
+- with an opening, filling begins at the left edge of the gap and proceeds clockwise over the remaining visible sweep
+- `inner_radius = 0` produces a filled disk; larger values produce a ring
+
+## Waveform flags
+
+### `GUI2C_WAVEFORM_FLAG_BORDER_ENABLED`
+
+Value:
+
+- `0x01`
+
+When set, a 1-pixel border is drawn around the widget.
+
+## Waveform update modes
+
+### `GUI2C_WAVEFORM_UPDATE_MODE_FULL_REPLACEMENT`
+
+Value:
+
+- `0x01`
+
+The server clears the widget with `bg`, replaces the stored samples for one wave, rescales over all currently stored waveform values in the widget and redraws.
+
+### `GUI2C_WAVEFORM_UPDATE_MODE_SHIFTING`
+
+Value:
+
+- `0x02`
+
+The server advances stored samples for one wave by `x_advance`, drops values that moved out of view, appends the new sample at the right edge, clears with `bg` and redraws all waves.
+
+### `GUI2C_WAVEFORM_UPDATE_MODE_SHIFTING_MULTI`
+
+Value:
+
+- `0x03`
+
+The server advances the stored history of multiple waves by the same `x_advance` and appends one new sample per referenced `wave_index` in a single packet. This reduces command overhead when several curves advance together.
+
 ## Rendering semantics
 
 Commands are processed strictly in reception order.
@@ -148,6 +323,12 @@ In the current implementation, rendering is synchronous:
 - only then is the next packet processed
 
 This makes behavior simple and predictable, but also means that many small updates can be visually slower than one coarse update.
+
+Line updates currently use this sequence:
+
+- redraw the previous line using its stored `bg` color
+- draw the new line using its `fg` color
+- flush
 
 ## Object ownership
 
@@ -164,12 +345,17 @@ Current public limits include:
 - `GUI2C_MAX_PACKET_SIZE = 256`
 - `GUI2C_MAX_TEXT_LEN = 64`
 - `GUI2C_MAX_OBJECTS = 32`
+- `GUI2C_MAX_WAVEFORM_WAVES = 4`
 
 These limits are compile-time constants from the public protocol header.
+
+Waveform storage depth and the maximum number of waveform objects are intentionally not part of the public protocol contract. Those limits are server-internal and may vary by selected server target profile.
 
 ## Notes for client authors
 
 - keep object ids stable across updates
 - prefer `UPDATE_*` over repeated destroy/create when the object is conceptually the same
+- it is safe to resend `CREATE_*` during a resync phase because create is idempotent on the current server
+- keep waveform create descriptors around on the client side because `UPDATE_WAVEFORM` cannot reconstruct a missing widget by itself
 - keep text within `GUI2C_MAX_TEXT_LEN`
 - for large animations, prefer changing only what really changed

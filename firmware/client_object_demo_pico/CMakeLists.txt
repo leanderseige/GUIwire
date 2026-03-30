@@ -14,9 +14,7 @@ target_link_libraries(gui2c_client_object_demo_pico
         hardware_i2c
 )
 
-target_compile_definitions(gui2c_client_object_demo_pico PRIVATE
-    PICO_STDIO_USB=1
-    PICO_STDIO_UART=0
-)
+pico_enable_stdio_usb(gui2c_client_object_demo_pico 1)
+pico_enable_stdio_uart(gui2c_client_object_demo_pico 0)
 
 pico_add_extra_outputs(gui2c_client_object_demo_pico)

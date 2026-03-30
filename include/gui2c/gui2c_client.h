@@ -22,6 +22,16 @@ gui2c_status_t gui2c_client_update_text(gui2c_client_t *client, const gui2c_text
 gui2c_status_t gui2c_client_destroy_object(gui2c_client_t *client, gui2c_object_id_t object_id);
 gui2c_status_t gui2c_client_create_rect(gui2c_client_t *client, const gui2c_rect_desc_t *desc);
 gui2c_status_t gui2c_client_update_rect(gui2c_client_t *client, const gui2c_rect_desc_t *desc);
+gui2c_status_t gui2c_client_create_line(gui2c_client_t *client, const gui2c_line_desc_t *desc);
+gui2c_status_t gui2c_client_update_line(gui2c_client_t *client, const gui2c_line_desc_t *desc);
+gui2c_status_t gui2c_client_create_bar(gui2c_client_t *client, const gui2c_bar_desc_t *desc);
+gui2c_status_t gui2c_client_update_bar(gui2c_client_t *client, const gui2c_bar_update_t *update);
+gui2c_status_t gui2c_client_create_ring(gui2c_client_t *client, const gui2c_ring_desc_t *desc);
+gui2c_status_t gui2c_client_update_ring(gui2c_client_t *client, const gui2c_ring_update_t *update);
+gui2c_status_t gui2c_client_create_waveform(gui2c_client_t *client, const gui2c_waveform_desc_t *desc);
+gui2c_status_t gui2c_client_update_waveform_full(gui2c_client_t *client, const gui2c_waveform_full_update_t *update);
+gui2c_status_t gui2c_client_update_waveform_shift(gui2c_client_t *client, const gui2c_waveform_shift_update_t *update);
+gui2c_status_t gui2c_client_update_waveform_shift_multi(gui2c_client_t *client, const gui2c_waveform_shift_multi_update_t *update);
 
 #ifdef __cplusplus
 }

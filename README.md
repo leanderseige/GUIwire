@@ -20,6 +20,10 @@ This repository currently provides:
 - server-reserved object ID `0` for the boot/status label
 - text objects with create/update/destroy support
 - rectangle objects with create/update/destroy support
+- line objects with create/update/destroy support
+- bar objects with create/update/destroy support
+- ring objects with create/update/destroy support
+- waveform objects with create/update/destroy support
 - `DESTROY_ALL_OBJECTS` as a clear-screen-style command
 - Pico platform adapters for I2C, SPI, GPIO and delay
 - interrupt-driven I2C packet reception on the Pico ILI9488 server
@@ -38,6 +42,14 @@ Implemented commands:
 - `DESTROY_OBJECT`
 - `CREATE_RECT`
 - `UPDATE_RECT`
+- `CREATE_LINE`
+- `UPDATE_LINE`
+- `CREATE_BAR`
+- `UPDATE_BAR`
+- `CREATE_RING`
+- `UPDATE_RING`
+- `CREATE_WAVEFORM`
+- `UPDATE_WAVEFORM`
 
 Rules:
 
@@ -80,6 +92,76 @@ Notes:
 - fill can be opaque or transparent
 - border is optional
 - border is always 1 pixel and drawn inside the rectangle bounds
+
+### Line object
+
+Fields:
+
+- `object_id`
+- `x1`, `y1`, `x2`, `y2`
+- `fg`, `bg`
+- `thickness`
+
+Notes:
+
+- update clears the previous line by redrawing it with `bg`
+- the new line is then drawn with `fg`
+- `thickness = 0` is treated as `1`
+
+### Bar object
+
+Fields:
+
+- `object_id`
+- `x`, `y`, `w`, `h`
+- `fg`, `bg`
+- `value`
+- `direction`
+
+Notes:
+
+- `value` is a `u16` fill level from empty to full
+- supported directions are top-to-bottom, bottom-to-top, left-to-right and right-to-left
+- updates usually only change `value`
+
+### Ring object
+
+Fields:
+
+- `object_id`
+- `cx`, `cy`
+- `radius`, `inner_radius`
+- `opening_angle_deg`
+- `bg`, `fg_active`, `fg_inactive`
+- `value`
+
+Notes:
+
+- renders a filled ring or disk depending on `inner_radius`
+- filling starts at the lower apex and proceeds clockwise
+- a non-zero `opening_angle_deg` leaves a symmetric gap at the bottom and makes the fill start at the left end of that gap
+- updates usually only change `value`
+
+### Waveform object
+
+Fields:
+
+- `object_id`
+- `x`, `y`, `w`, `h`
+- `border`, `bg`
+- `flags`
+- `wave_count`
+- `wave_colors[]`
+
+Notes:
+
+- one widget can display up to `GUI2C_MAX_WAVEFORM_WAVES` curves
+- updates address one `wave_index` at a time
+- full replacement stores a complete value set for one wave
+- shifting can update one wave or multiple waves in one packet
+- shifting stores time history right-to-left and redraws the widget from the stored raw data
+- autoscaling uses the current maximum over all stored waveform values in the widget
+- server-side waveform storage limits are hardware-profile dependent, not part of the public client protocol
 
 ## Build
 
@@ -148,5 +230,7 @@ Current implementation notes:
 - rendering is synchronous
 - there is no generic z-order system yet
 - object types are currently stored in separate arrays
+- `CREATE_*` commands are idempotent on the server and are safe to resend for resync purposes
+- server-side optimization and memory limits can depend on the selected server target profile
 - overlapping transparent objects are still a simple model, not a full compositor
 - large filled areas depend heavily on display driver throughput and SPI speed

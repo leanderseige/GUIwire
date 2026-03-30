@@ -126,6 +126,8 @@ static gui2c_status_t redraw_changed_cells(gui2c_server_t *server, const gui2c_t
 gui2c_status_t gui2c_object_text_create(gui2c_server_t *server, const uint8_t *payload, uint16_t payload_len) {
     gui2c_text_desc_t desc; char text_buf[GUI2C_MAX_TEXT_LEN + 1]; gui2c_text_object_t *obj; gui2c_status_t st;
     st = parse_text_desc(payload, payload_len, &desc, text_buf, sizeof(text_buf)); if (st != GUI2C_STATUS_OK) return st;
+    obj = gui2c_server_find_text_object(server, desc.object_id);
+    if (obj) return GUI2C_STATUS_OK;
     st = create_or_replace_text(server, &desc, 0); if (st != GUI2C_STATUS_OK) return st;
     obj = gui2c_server_find_text_object(server, desc.object_id);
     st = gui2c_object_text_draw(server, obj); if (st != GUI2C_STATUS_OK) return st;

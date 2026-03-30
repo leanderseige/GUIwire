@@ -19,6 +19,10 @@ add_library(gui2c STATIC
     lib/server/gui2c_server.c
     lib/server/gui2c_server_objects.c
     lib/objects/gui2c_object_text.c
+    lib/objects/gui2c_object_line.c
+    lib/objects/gui2c_object_bar.c
+    lib/objects/gui2c_object_ring.c
+    lib/objects/gui2c_object_waveform.c
     lib/renderer/gui2c_font_5x7.c
     lib/renderer/gui2c_renderer_text.c
     lib/objects/gui2c_object_rect.c    
@@ -29,6 +33,11 @@ target_include_directories(gui2c
     PUBLIC
         ${CMAKE_CURRENT_LIST_DIR}/include
         ${CMAKE_CURRENT_LIST_DIR}
+)
+
+target_link_libraries(gui2c
+    PUBLIC
+        m
 )
 
 if(GUI2C_BUILD_PICO_FIRMWARE)

@@ -45,6 +45,8 @@ Responsibilities:
 - redraw orchestration
 - clear-all behavior
 
+The public client API and protocol should remain portable across display types. Server-side target profiles may tune storage limits, caching strategies and internal pixel formats for a specific hardware class.
+
 ### Object modules
 
 Location:
@@ -78,9 +80,12 @@ Responsibilities:
 - glyph helpers
 - controller-specific display initialization
 - controller-specific transfer optimization
+- optional controller-specific acceleration paths used by higher layers
 
 The renderer/display layer does not define GUI object semantics.  
 It only provides drawing primitives.
+
+For targets with substantially different capabilities, prefer a selectable server target profile or display-specific optimization path over changing the public protocol.
 
 ### Platform adapter
 
@@ -184,6 +189,8 @@ Typical optimization points are:
 - avoiding unnecessary clears on opaque object updates
 - reducing tiny transfers
 - using interrupt-driven or DMA-based transport handling
+- tuning server-internal object limits per target profile
+- choosing internal cache formats that match the target, such as indexed buffers on RAM-constrained displays or full offscreen buffers on faster hardware
 
 ## Common pitfalls
 
@@ -212,6 +219,8 @@ Be explicit about redraw order, especially for background-like objects versus te
 ### Excessive clears
 
 For opaque objects with unchanged geometry, clearing before redrawing may be unnecessary and causes visible flicker.
+
+On slower displays, consider server-side partial redraw strategies or internal caches before changing the client protocol. Those tradeoffs are usually target-specific.
 
 ### Missing header or CMake entries
 

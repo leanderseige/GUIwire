@@ -4,6 +4,10 @@
 #include "lib/server/gui2c_server_objects.h"
 #include "lib/objects/gui2c_object_text.h"
 #include "lib/objects/gui2c_object_rect.h"
+#include "lib/objects/gui2c_object_line.h"
+#include "lib/objects/gui2c_object_bar.h"
+#include "lib/objects/gui2c_object_ring.h"
+#include "lib/objects/gui2c_object_waveform.h"
 
 gui2c_color_t gui2c_rgb565(uint8_t r, uint8_t g, uint8_t b) {
     return (gui2c_color_t)(((r & 0xF8u) << 8) | ((g & 0xFCu) << 3) | ((b & 0xF8u) >> 3));
@@ -34,7 +38,30 @@ gui2c_status_t gui2c_server_show_boot(gui2c_server_t *server) {
             if (st != GUI2C_STATUS_OK) return st;
         }
     }
-
+    for (i = 0; i < GUI2C_MAX_OBJECTS; ++i) {
+        if (server->bar_objects[i].in_use) {
+            st = gui2c_object_bar_draw(server, &server->bar_objects[i]);
+            if (st != GUI2C_STATUS_OK) return st;
+        }
+    }
+    for (i = 0; i < GUI2C_MAX_OBJECTS; ++i) {
+        if (server->ring_objects[i].in_use) {
+            st = gui2c_object_ring_draw(server, &server->ring_objects[i]);
+            if (st != GUI2C_STATUS_OK) return st;
+        }
+    }
+    for (i = 0; i < GUI2C_SERVER_MAX_WAVEFORM_OBJECTS; ++i) {
+        if (server->waveform_objects[i].in_use) {
+            st = gui2c_object_waveform_draw(server, &server->waveform_objects[i]);
+            if (st != GUI2C_STATUS_OK) return st;
+        }
+    }
+    for (i = 0; i < GUI2C_MAX_OBJECTS; ++i) {
+        if (server->line_objects[i].in_use) {
+            st = gui2c_object_line_draw(server, &server->line_objects[i], server->line_objects[i].fg);
+            if (st != GUI2C_STATUS_OK) return st;
+        }
+    }
     for (i = 0; i < GUI2C_MAX_OBJECTS; ++i) {
         if (server->text_objects[i].in_use) {
             st = gui2c_object_text_draw(server, &server->text_objects[i]);
@@ -84,6 +111,22 @@ gui2c_status_t gui2c_server_handle_packet(gui2c_server_t *server, const uint8_t 
             return gui2c_object_rect_create(server, view.payload, view.header.payload_len);
         case GUI2C_CMD_UPDATE_RECT:
             return gui2c_object_rect_update(server, view.payload, view.header.payload_len);
+        case GUI2C_CMD_CREATE_LINE:
+            return gui2c_object_line_create(server, view.payload, view.header.payload_len);
+        case GUI2C_CMD_UPDATE_LINE:
+            return gui2c_object_line_update(server, view.payload, view.header.payload_len);
+        case GUI2C_CMD_CREATE_BAR:
+            return gui2c_object_bar_create(server, view.payload, view.header.payload_len);
+        case GUI2C_CMD_UPDATE_BAR:
+            return gui2c_object_bar_update(server, view.payload, view.header.payload_len);
+        case GUI2C_CMD_CREATE_RING:
+            return gui2c_object_ring_create(server, view.payload, view.header.payload_len);
+        case GUI2C_CMD_UPDATE_RING:
+            return gui2c_object_ring_update(server, view.payload, view.header.payload_len);
+        case GUI2C_CMD_CREATE_WAVEFORM:
+            return gui2c_object_waveform_create(server, view.payload, view.header.payload_len);
+        case GUI2C_CMD_UPDATE_WAVEFORM:
+            return gui2c_object_waveform_update(server, view.payload, view.header.payload_len);
         case GUI2C_CMD_DESTROY_OBJECT: {
             gui2c_object_id_t object_id;
             if (view.header.payload_len != 2u) return GUI2C_STATUS_ERR_PROTOCOL;
@@ -93,6 +136,18 @@ gui2c_status_t gui2c_server_handle_packet(gui2c_server_t *server, const uint8_t 
             if (st == GUI2C_STATUS_OK) return st;
 
             st = gui2c_object_rect_destroy(server, object_id);
+            if (st == GUI2C_STATUS_OK) return st;
+
+            st = gui2c_object_line_destroy(server, object_id);
+            if (st == GUI2C_STATUS_OK) return st;
+
+            st = gui2c_object_bar_destroy(server, object_id);
+            if (st == GUI2C_STATUS_OK) return st;
+
+            st = gui2c_object_ring_destroy(server, object_id);
+            if (st == GUI2C_STATUS_OK) return st;
+
+            st = gui2c_object_waveform_destroy(server, object_id);
             if (st == GUI2C_STATUS_OK) return st;
 
             return GUI2C_STATUS_ERR_NOT_FOUND;

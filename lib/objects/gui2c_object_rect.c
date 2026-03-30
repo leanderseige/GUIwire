@@ -86,6 +86,9 @@ gui2c_status_t gui2c_object_rect_create(gui2c_server_t *server, const uint8_t *p
     st = parse_rect_desc(payload, payload_len, &desc);
     if (st != GUI2C_STATUS_OK) return st;
 
+    obj = gui2c_server_find_rect_object(server, desc.object_id);
+    if (obj) return GUI2C_STATUS_OK;
+
     st = create_or_replace_rect(server, &desc, 0);
     if (st != GUI2C_STATUS_OK) return st;
 
