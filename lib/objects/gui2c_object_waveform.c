@@ -759,6 +759,112 @@ static gui2c_status_t waveform_render_plot_columns(gui2c_server_t *server, const
     return GUI2C_STATUS_OK;
 }
 
+static int waveform_plot_compatible(const gui2c_waveform_object_t *a, const gui2c_waveform_object_t *b) {
+    uint8_t wave_idx;
+
+    if (!a || !b) return 0;
+    if (a->x != b->x || a->y != b->y || a->w != b->w || a->h != b->h ||
+        a->border != b->border || a->bg != b->bg || a->flags != b->flags ||
+        a->wave_count != b->wave_count) {
+        return 0;
+    }
+
+    for (wave_idx = 0u; wave_idx < a->wave_count; ++wave_idx) {
+        if (a->wave_colors[wave_idx] != b->wave_colors[wave_idx]) return 0;
+    }
+
+    return 1;
+}
+
+static gui2c_status_t waveform_render_plot_columns_diff(gui2c_server_t *server,
+                                                        const gui2c_waveform_object_t *old_obj,
+                                                        const gui2c_waveform_object_t *new_obj) {
+    uint16_t plot_x;
+    uint16_t plot_y;
+    uint16_t plot_w;
+    uint16_t plot_h;
+    uint16_t old_max_value;
+    uint16_t new_max_value;
+    uint16_t column;
+    uint8_t wave_idx;
+
+    if (!server || !old_obj || !new_obj || !new_obj->in_use) return GUI2C_STATUS_ERR_INVALID_ARGUMENT;
+    if (!waveform_plot_compatible(old_obj, new_obj)) return gui2c_object_waveform_draw(server, new_obj);
+
+    plot_x = waveform_plot_x(new_obj);
+    plot_y = waveform_plot_y(new_obj);
+    plot_w = waveform_plot_w(new_obj);
+    plot_h = waveform_plot_h(new_obj);
+    if (plot_w == 0u || plot_h == 0u) return GUI2C_STATUS_OK;
+
+    {
+        int16_t old_tops[GUI2C_MAX_WAVEFORM_WAVES][plot_w];
+        int16_t old_bottoms[GUI2C_MAX_WAVEFORM_WAVES][plot_w];
+        int16_t new_tops[GUI2C_MAX_WAVEFORM_WAVES][plot_w];
+        int16_t new_bottoms[GUI2C_MAX_WAVEFORM_WAVES][plot_w];
+
+        old_max_value = waveform_max_sample(old_obj);
+        new_max_value = waveform_max_sample(new_obj);
+
+        for (wave_idx = 0u; wave_idx < new_obj->wave_count; ++wave_idx) {
+            waveform_prepare_wave_columns(old_obj,
+                                          wave_idx,
+                                          plot_x,
+                                          plot_y,
+                                          plot_w,
+                                          plot_h,
+                                          old_max_value,
+                                          old_tops[wave_idx],
+                                          old_bottoms[wave_idx]);
+            waveform_prepare_wave_columns(new_obj,
+                                          wave_idx,
+                                          plot_x,
+                                          plot_y,
+                                          plot_w,
+                                          plot_h,
+                                          new_max_value,
+                                          new_tops[wave_idx],
+                                          new_bottoms[wave_idx]);
+        }
+
+        for (column = 0u; column < plot_w; ++column) {
+            int changed = 0;
+
+            for (wave_idx = 0u; wave_idx < new_obj->wave_count; ++wave_idx) {
+                if (old_tops[wave_idx][column] != new_tops[wave_idx][column] ||
+                    old_bottoms[wave_idx][column] != new_bottoms[wave_idx][column]) {
+                    changed = 1;
+                    break;
+                }
+            }
+
+            if (!changed) continue;
+
+            {
+                uint16_t draw_x = (uint16_t)(plot_x + column);
+                gui2c_status_t st = gui2c_server_fill_bg(server, draw_x, plot_y, 1u, plot_h, new_obj->bg);
+                if (st != GUI2C_STATUS_OK) return st;
+
+                for (wave_idx = 0u; wave_idx < new_obj->wave_count; ++wave_idx) {
+                    if (new_tops[wave_idx][column] < 0 || new_bottoms[wave_idx][column] < 0) continue;
+                    st = waveform_draw_vspan(server,
+                                             (int)draw_x,
+                                             new_tops[wave_idx][column],
+                                             new_bottoms[wave_idx][column],
+                                             new_obj->wave_colors[wave_idx],
+                                             plot_x,
+                                             plot_y,
+                                             plot_w,
+                                             plot_h);
+                    if (st != GUI2C_STATUS_OK) return st;
+                }
+            }
+        }
+    }
+
+    return GUI2C_STATUS_OK;
+}
+
 gui2c_status_t gui2c_object_waveform_draw(gui2c_server_t *server, const gui2c_waveform_object_t *obj) {
     gui2c_status_t st;
 
@@ -794,6 +900,7 @@ gui2c_status_t gui2c_object_waveform_create(gui2c_server_t *server, const uint8_
 gui2c_status_t gui2c_object_waveform_update(gui2c_server_t *server, const uint8_t *payload, uint16_t payload_len) {
     gui2c_waveform_update_desc_t update;
     gui2c_waveform_object_t *obj;
+    gui2c_waveform_object_t old_obj;
     gui2c_status_t st;
 
     st = parse_waveform_update_desc(payload, payload_len, &update);
@@ -801,6 +908,8 @@ gui2c_status_t gui2c_object_waveform_update(gui2c_server_t *server, const uint8_
 
     obj = gui2c_server_find_waveform_object(server, update.object_id);
     if (!obj) return GUI2C_STATUS_ERR_NOT_FOUND;
+
+    old_obj = *obj;
 
     if (update.mode == (uint8_t)GUI2C_WAVEFORM_UPDATE_MODE_FULL_REPLACEMENT) {
         st = waveform_apply_full_update(obj, &update);
@@ -811,7 +920,7 @@ gui2c_status_t gui2c_object_waveform_update(gui2c_server_t *server, const uint8_
     }
     if (st != GUI2C_STATUS_OK) return st;
 
-    st = waveform_render_plot_columns(server, obj);
+    st = waveform_render_plot_columns_diff(server, &old_obj, obj);
     if (st != GUI2C_STATUS_OK) return st;
 
     return gui2c_server_flush(server);

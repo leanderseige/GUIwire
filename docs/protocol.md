@@ -128,6 +128,10 @@ Payload layout:
 - `u16 object_id`
 - `u16 value`
 
+Current server behavior:
+
+- if geometry, colors and direction are unchanged, the server may update only the changed bar delta
+
 ### `CREATE_RING` (`0x1C`)
 
 Payload layout:
@@ -149,6 +153,10 @@ Payload layout:
 
 - `u16 object_id`
 - `u16 value`
+
+Current server behavior:
+
+- if geometry and colors are unchanged, the server may update only the ring sectors whose classification changed between the old and new value
 
 ### `CREATE_WAVEFORM` (`0x18`)
 
@@ -293,7 +301,7 @@ Value:
 
 - `0x01`
 
-The server clears the widget with `bg`, replaces the stored samples for one wave, rescales over all currently stored waveform values in the widget and redraws.
+The server replaces the stored samples for one wave, rescales over all currently stored waveform values in the widget and redraws. The exact redraw strategy is target-specific.
 
 ### `GUI2C_WAVEFORM_UPDATE_MODE_SHIFTING`
 
@@ -301,7 +309,7 @@ Value:
 
 - `0x02`
 
-The server advances stored samples for one wave by `x_advance`, drops values that moved out of view, appends the new sample at the right edge, clears with `bg` and redraws all waves.
+The server advances stored samples for one wave by `x_advance`, drops values that moved out of view, appends the new sample at the right edge and redraws the widget. The exact redraw strategy is target-specific.
 
 ### `GUI2C_WAVEFORM_UPDATE_MODE_SHIFTING_MULTI`
 
@@ -330,6 +338,8 @@ Line updates currently use this sequence:
 - draw the new line using its `fg` color
 - flush
 
+Other object types may use more selective redraw strategies internally. For example, bars, rings and waveform widgets may update only the changed regions as long as the visible result still matches the public object semantics.
+
 ## Object ownership
 
 Rules:
@@ -350,6 +360,8 @@ Current public limits include:
 These limits are compile-time constants from the public protocol header.
 
 Waveform storage depth and the maximum number of waveform objects are intentionally not part of the public protocol contract. Those limits are server-internal and may vary by selected server target profile.
+
+The same applies to server-internal rendering strategies such as column-wise waveform rendering, indexed caches or partial redraw acceleration paths.
 
 ## Notes for client authors
 

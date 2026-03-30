@@ -187,10 +187,12 @@ Typical optimization points are:
 - SPI baud rate
 - batching repeated fill data for large rectangles
 - avoiding unnecessary clears on opaque object updates
+- turning value-only widgets into delta updates where only changed regions are redrawn
 - reducing tiny transfers
 - using interrupt-driven or DMA-based transport handling
 - tuning server-internal object limits per target profile
 - choosing internal cache formats that match the target, such as indexed buffers on RAM-constrained displays or full offscreen buffers on faster hardware
+- using controller-specific transfer batching, for example keeping chip-select asserted across a whole window write
 
 ## Common pitfalls
 
@@ -221,6 +223,8 @@ Be explicit about redraw order, especially for background-like objects versus te
 For opaque objects with unchanged geometry, clearing before redrawing may be unnecessary and causes visible flicker.
 
 On slower displays, consider server-side partial redraw strategies or internal caches before changing the client protocol. Those tradeoffs are usually target-specific.
+
+Examples from the current tree include column-wise waveform redraw and delta-based bar or ring updates. Those are server implementation details, not protocol features.
 
 ### Missing header or CMake entries
 

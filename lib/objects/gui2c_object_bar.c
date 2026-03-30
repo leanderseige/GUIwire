@@ -73,6 +73,44 @@ static uint16_t bar_filled_extent(uint16_t value, uint16_t extent) {
     return (uint16_t)scaled;
 }
 
+static gui2c_status_t bar_draw_delta(gui2c_server_t *server,
+                                     const gui2c_bar_object_t *obj,
+                                     uint16_t old_filled,
+                                     uint16_t new_filled) {
+    if (!server || !obj) return GUI2C_STATUS_ERR_INVALID_ARGUMENT;
+    if (old_filled == new_filled) return GUI2C_STATUS_OK;
+
+    if (new_filled > old_filled) {
+        uint16_t delta = (uint16_t)(new_filled - old_filled);
+
+        switch ((gui2c_bar_direction_t)obj->direction) {
+            case GUI2C_BAR_DIRECTION_TOP_TO_BOTTOM:
+                return gui2c_server_fill_bg(server, obj->x, (uint16_t)(obj->y + old_filled), obj->w, delta, obj->fg);
+            case GUI2C_BAR_DIRECTION_BOTTOM_TO_TOP:
+                return gui2c_server_fill_bg(server, obj->x, (uint16_t)(obj->y + obj->h - new_filled), obj->w, delta, obj->fg);
+            case GUI2C_BAR_DIRECTION_RIGHT_TO_LEFT:
+                return gui2c_server_fill_bg(server, (uint16_t)(obj->x + obj->w - new_filled), obj->y, delta, obj->h, obj->fg);
+            case GUI2C_BAR_DIRECTION_LEFT_TO_RIGHT:
+            default:
+                return gui2c_server_fill_bg(server, (uint16_t)(obj->x + old_filled), obj->y, delta, obj->h, obj->fg);
+        }
+    } else {
+        uint16_t delta = (uint16_t)(old_filled - new_filled);
+
+        switch ((gui2c_bar_direction_t)obj->direction) {
+            case GUI2C_BAR_DIRECTION_TOP_TO_BOTTOM:
+                return gui2c_server_fill_bg(server, obj->x, (uint16_t)(obj->y + new_filled), obj->w, delta, obj->bg);
+            case GUI2C_BAR_DIRECTION_BOTTOM_TO_TOP:
+                return gui2c_server_fill_bg(server, obj->x, (uint16_t)(obj->y + obj->h - old_filled), obj->w, delta, obj->bg);
+            case GUI2C_BAR_DIRECTION_RIGHT_TO_LEFT:
+                return gui2c_server_fill_bg(server, (uint16_t)(obj->x + obj->w - old_filled), obj->y, delta, obj->h, obj->bg);
+            case GUI2C_BAR_DIRECTION_LEFT_TO_RIGHT:
+            default:
+                return gui2c_server_fill_bg(server, (uint16_t)(obj->x + new_filled), obj->y, delta, obj->h, obj->bg);
+        }
+    }
+}
+
 gui2c_status_t gui2c_object_bar_draw(gui2c_server_t *server, const gui2c_bar_object_t *obj) {
     gui2c_status_t st;
     uint16_t filled;
@@ -143,6 +181,9 @@ gui2c_status_t gui2c_object_bar_update(gui2c_server_t *server, const uint8_t *pa
     gui2c_bar_update_t update;
     gui2c_bar_object_t *obj;
     gui2c_status_t st;
+    uint16_t extent;
+    uint16_t old_filled;
+    uint16_t new_filled;
 
     st = parse_bar_update(payload, payload_len, &update);
     if (st != GUI2C_STATUS_OK) return st;
@@ -150,8 +191,13 @@ gui2c_status_t gui2c_object_bar_update(gui2c_server_t *server, const uint8_t *pa
     obj = gui2c_server_find_bar_object(server, update.object_id);
     if (!obj) return GUI2C_STATUS_ERR_NOT_FOUND;
 
+    extent = ((gui2c_bar_direction_t)obj->direction == GUI2C_BAR_DIRECTION_TOP_TO_BOTTOM ||
+              (gui2c_bar_direction_t)obj->direction == GUI2C_BAR_DIRECTION_BOTTOM_TO_TOP) ? obj->h : obj->w;
+    old_filled = bar_filled_extent(obj->value, extent);
     obj->value = update.value;
-    st = gui2c_object_bar_draw(server, obj);
+    new_filled = bar_filled_extent(obj->value, extent);
+
+    st = bar_draw_delta(server, obj, old_filled, new_filled);
     if (st != GUI2C_STATUS_OK) return st;
 
     return gui2c_server_flush(server);

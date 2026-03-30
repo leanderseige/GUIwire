@@ -123,6 +123,19 @@ static gui2c_status_t redraw_changed_cells(gui2c_server_t *server, const gui2c_t
     return GUI2C_STATUS_OK;
 }
 
+static int text_objects_equal(const gui2c_text_object_t *a, const gui2c_text_object_t *b) {
+    if (!a || !b) return 0;
+    return a->x == b->x &&
+           a->y == b->y &&
+           a->w == b->w &&
+           a->h == b->h &&
+           a->fg == b->fg &&
+           a->bg == b->bg &&
+           a->flags == b->flags &&
+           a->zoom == b->zoom &&
+           strcmp(a->text, b->text) == 0;
+}
+
 gui2c_status_t gui2c_object_text_create(gui2c_server_t *server, const uint8_t *payload, uint16_t payload_len) {
     gui2c_text_desc_t desc; char text_buf[GUI2C_MAX_TEXT_LEN + 1]; gui2c_text_object_t *obj; gui2c_status_t st;
     st = parse_text_desc(payload, payload_len, &desc, text_buf, sizeof(text_buf)); if (st != GUI2C_STATUS_OK) return st;
@@ -140,6 +153,7 @@ gui2c_status_t gui2c_object_text_update(gui2c_server_t *server, const uint8_t *p
     obj = gui2c_server_find_text_object(server, desc.object_id); if (obj) { old_copy = *obj; had_old = 1; }
     st = create_or_replace_text(server, &desc, 1); if (st != GUI2C_STATUS_OK) return st;
     obj = gui2c_server_find_text_object(server, desc.object_id);
+    if (had_old && text_objects_equal(&old_copy, obj)) return GUI2C_STATUS_OK;
     st = redraw_changed_cells(server, had_old ? &old_copy : NULL, obj); if (st != GUI2C_STATUS_OK) return st;
     return gui2c_server_flush(server);
 }

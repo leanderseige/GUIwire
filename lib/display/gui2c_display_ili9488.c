@@ -56,6 +56,12 @@ static gui2c_status_t ili9488_write_reg(gui2c_display_ili9488_t *d, uint8_t cmd,
     return ili9488_write_data(d, data, len);
 }
 
+static gui2c_status_t ili9488_write_raw(gui2c_display_ili9488_t *d, const uint8_t *data, size_t len) {
+    if (!d || !d->cfg.spi_write) return GUI2C_STATUS_ERR_STATE;
+    if (!data || !len) return GUI2C_STATUS_OK;
+    return d->cfg.spi_write(d->cfg.user_ctx, data, len);
+}
+
 static void ili9488_delay(gui2c_display_ili9488_t *d, uint32_t ms) {
     if (d && d->cfg.delay_ms) d->cfg.delay_ms(d->cfg.user_ctx, ms);
 }
@@ -88,6 +94,41 @@ static gui2c_status_t ili9488_set_window(gui2c_display_ili9488_t *d, uint16_t x0
     if (st != GUI2C_STATUS_OK) return st;
 
     return ili9488_write_cmd(d, ILI9488_CMD_RAMWR);
+}
+
+static gui2c_status_t ili9488_begin_window_write(gui2c_display_ili9488_t *d, uint16_t x0, uint16_t y0, uint16_t x1, uint16_t y1) {
+    uint8_t buf[4];
+    uint8_t cmd;
+
+    if (!d || !d->cfg.spi_write || !d->cfg.gpio_write) return GUI2C_STATUS_ERR_STATE;
+
+    ili9488_select(d, true);
+
+    cmd = ILI9488_CMD_CASET;
+    d->cfg.gpio_write(d->cfg.user_ctx, d->cfg.pin_dc, false);
+    if (ili9488_write_raw(d, &cmd, 1u) != GUI2C_STATUS_OK) goto fail;
+    buf[0] = (uint8_t)(x0 >> 8); buf[1] = (uint8_t)(x0 & 0xFFu);
+    buf[2] = (uint8_t)(x1 >> 8); buf[3] = (uint8_t)(x1 & 0xFFu);
+    d->cfg.gpio_write(d->cfg.user_ctx, d->cfg.pin_dc, true);
+    if (ili9488_write_raw(d, buf, 4u) != GUI2C_STATUS_OK) goto fail;
+
+    cmd = ILI9488_CMD_PASET;
+    d->cfg.gpio_write(d->cfg.user_ctx, d->cfg.pin_dc, false);
+    if (ili9488_write_raw(d, &cmd, 1u) != GUI2C_STATUS_OK) goto fail;
+    buf[0] = (uint8_t)(y0 >> 8); buf[1] = (uint8_t)(y0 & 0xFFu);
+    buf[2] = (uint8_t)(y1 >> 8); buf[3] = (uint8_t)(y1 & 0xFFu);
+    d->cfg.gpio_write(d->cfg.user_ctx, d->cfg.pin_dc, true);
+    if (ili9488_write_raw(d, buf, 4u) != GUI2C_STATUS_OK) goto fail;
+
+    cmd = ILI9488_CMD_RAMWR;
+    d->cfg.gpio_write(d->cfg.user_ctx, d->cfg.pin_dc, false);
+    if (ili9488_write_raw(d, &cmd, 1u) != GUI2C_STATUS_OK) goto fail;
+    d->cfg.gpio_write(d->cfg.user_ctx, d->cfg.pin_dc, true);
+    return GUI2C_STATUS_OK;
+
+fail:
+    ili9488_select(d, false);
+    return GUI2C_STATUS_ERR_TRANSPORT;
 }
 
 static gui2c_status_t ili9488_push_repeat(gui2c_display_ili9488_t *d, gui2c_color_t color, uint32_t count) {
@@ -142,7 +183,7 @@ static gui2c_status_t ili9488_fill_rect(void *ctx,
 
     if (w == 0u || h == 0u) return GUI2C_STATUS_OK;
 
-    if (ili9488_set_window(d, x, y, (uint16_t)(x + w - 1u), (uint16_t)(y + h - 1u)) != GUI2C_STATUS_OK) {
+    if (ili9488_begin_window_write(d, x, y, (uint16_t)(x + w - 1u), (uint16_t)(y + h - 1u)) != GUI2C_STATUS_OK) {
         return GUI2C_STATUS_ERR_TRANSPORT;
     }
 
@@ -160,13 +201,15 @@ static gui2c_status_t ili9488_fill_rect(void *ctx,
         uint32_t pixels_now = (pixels_remaining > CHUNK_PIXELS) ? CHUNK_PIXELS : pixels_remaining;
         uint32_t bytes_now = pixels_now * 3u;
 
-        if (ili9488_write_data(d, chunk, bytes_now) != GUI2C_STATUS_OK) {
+        if (ili9488_write_raw(d, chunk, bytes_now) != GUI2C_STATUS_OK) {
+            ili9488_select(d, false);
             return GUI2C_STATUS_ERR_TRANSPORT;
         }
 
         pixels_remaining -= pixels_now;
     }
 
+    ili9488_select(d, false);
     return GUI2C_STATUS_OK;
 }
 
@@ -177,12 +220,17 @@ static gui2c_status_t ili9488_draw_pixel(void *ctx, int x, int y, gui2c_color_t 
     if (!d) return GUI2C_STATUS_ERR_INVALID_ARGUMENT;
     if (x < 0 || y < 0 || x >= d->cfg.width || y >= d->cfg.height) return GUI2C_STATUS_OK;
 
-    if (ili9488_set_window(d, (uint16_t)x, (uint16_t)y, (uint16_t)x, (uint16_t)y) != GUI2C_STATUS_OK) {
+    if (ili9488_begin_window_write(d, (uint16_t)x, (uint16_t)y, (uint16_t)x, (uint16_t)y) != GUI2C_STATUS_OK) {
         return GUI2C_STATUS_ERR_TRANSPORT;
     }
 
     gui2c_rgb565_to_rgb666(color, px);
-    return ili9488_write_data(d, px, sizeof(px));
+    if (ili9488_write_raw(d, px, sizeof(px)) != GUI2C_STATUS_OK) {
+        ili9488_select(d, false);
+        return GUI2C_STATUS_ERR_TRANSPORT;
+    }
+    ili9488_select(d, false);
+    return GUI2C_STATUS_OK;
 }
 
 // static gui2c_status_t ili9488_draw_text(void *ctx,

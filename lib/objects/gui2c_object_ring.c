@@ -124,6 +124,87 @@ static gui2c_color_t ring_class_color(const gui2c_ring_object_t *obj, gui2c_ring
     return obj->bg;
 }
 
+static gui2c_status_t ring_draw_column_diff(gui2c_server_t *server,
+                                            const gui2c_ring_object_t *old_obj,
+                                            const gui2c_ring_object_t *new_obj,
+                                            int rel_x) {
+    gui2c_status_t st = GUI2C_STATUS_OK;
+    gui2c_ring_pixel_class_t current_new_class = GUI2C_RING_PIXEL_BG;
+    int run_start = 0;
+    uint16_t x0;
+    uint16_t y0;
+    uint16_t draw_x;
+    int rel_y;
+
+    if (!server || !new_obj) return GUI2C_STATUS_ERR_INVALID_ARGUMENT;
+
+    x0 = (new_obj->cx > new_obj->radius) ? (uint16_t)(new_obj->cx - new_obj->radius) : 0u;
+    y0 = (new_obj->cy > new_obj->radius) ? (uint16_t)(new_obj->cy - new_obj->radius) : 0u;
+    draw_x = (uint16_t)((int)x0 + (rel_x + (int)new_obj->radius));
+
+    for (rel_y = -(int)new_obj->radius; rel_y <= (int)new_obj->radius; ++rel_y) {
+        gui2c_ring_pixel_class_t old_class =
+            old_obj ? ring_pixel_class(old_obj, rel_x, rel_y) : GUI2C_RING_PIXEL_BG;
+        gui2c_ring_pixel_class_t new_class = ring_pixel_class(new_obj, rel_x, rel_y);
+
+        if (old_class == new_class) new_class = GUI2C_RING_PIXEL_BG;
+
+        if (new_class != current_new_class) {
+            if (current_new_class != GUI2C_RING_PIXEL_BG) {
+                uint16_t draw_y = (uint16_t)((int)y0 + (run_start + (int)new_obj->radius));
+                uint16_t draw_h = (uint16_t)(rel_y - run_start);
+                st = gui2c_server_fill_bg(server,
+                                          draw_x,
+                                          draw_y,
+                                          1u,
+                                          draw_h,
+                                          ring_class_color(new_obj, current_new_class));
+                if (st != GUI2C_STATUS_OK) return st;
+            }
+            current_new_class = new_class;
+            run_start = rel_y;
+        }
+    }
+
+    if (current_new_class != GUI2C_RING_PIXEL_BG) {
+        uint16_t draw_y = (uint16_t)((int)y0 + (run_start + (int)new_obj->radius));
+        uint16_t draw_h = (uint16_t)((int)new_obj->radius - run_start + 1);
+        st = gui2c_server_fill_bg(server,
+                                  draw_x,
+                                  draw_y,
+                                  1u,
+                                  draw_h,
+                                  ring_class_color(new_obj, current_new_class));
+        if (st != GUI2C_STATUS_OK) return st;
+    }
+
+    return GUI2C_STATUS_OK;
+}
+
+static gui2c_status_t gui2c_object_ring_draw_diff(gui2c_server_t *server,
+                                                  const gui2c_ring_object_t *old_obj,
+                                                  const gui2c_ring_object_t *new_obj) {
+    int rel_x;
+
+    if (!server || !new_obj || !new_obj->in_use) return GUI2C_STATUS_ERR_INVALID_ARGUMENT;
+
+    if (!old_obj || old_obj->radius != new_obj->radius || old_obj->cx != new_obj->cx || old_obj->cy != new_obj->cy ||
+        old_obj->inner_radius != new_obj->inner_radius || old_obj->opening_angle_deg != new_obj->opening_angle_deg ||
+        old_obj->bg != new_obj->bg || old_obj->fg_active != new_obj->fg_active ||
+        old_obj->fg_inactive != new_obj->fg_inactive) {
+        return gui2c_object_ring_draw(server, new_obj);
+    }
+
+    if (new_obj->radius == 0u) return GUI2C_STATUS_OK;
+
+    for (rel_x = -(int)new_obj->radius; rel_x <= (int)new_obj->radius; ++rel_x) {
+        gui2c_status_t st = ring_draw_column_diff(server, old_obj, new_obj, rel_x);
+        if (st != GUI2C_STATUS_OK) return st;
+    }
+
+    return GUI2C_STATUS_OK;
+}
+
 gui2c_status_t gui2c_object_ring_draw(gui2c_server_t *server, const gui2c_ring_object_t *obj) {
     gui2c_status_t st;
     uint16_t size;
@@ -198,6 +279,7 @@ gui2c_status_t gui2c_object_ring_create(gui2c_server_t *server, const uint8_t *p
 gui2c_status_t gui2c_object_ring_update(gui2c_server_t *server, const uint8_t *payload, uint16_t payload_len) {
     gui2c_ring_update_t update;
     gui2c_ring_object_t *obj;
+    gui2c_ring_object_t old_obj;
     gui2c_status_t st;
 
     st = parse_ring_update(payload, payload_len, &update);
@@ -206,8 +288,9 @@ gui2c_status_t gui2c_object_ring_update(gui2c_server_t *server, const uint8_t *p
     obj = gui2c_server_find_ring_object(server, update.object_id);
     if (!obj) return GUI2C_STATUS_ERR_NOT_FOUND;
 
+    old_obj = *obj;
     obj->value = update.value;
-    st = gui2c_object_ring_draw(server, obj);
+    st = gui2c_object_ring_draw_diff(server, &old_obj, obj);
     if (st != GUI2C_STATUS_OK) return st;
 
     return gui2c_server_flush(server);

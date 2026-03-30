@@ -170,6 +170,22 @@ static gui2c_status_t draw_line_spans(gui2c_server_t *server,
     return GUI2C_STATUS_OK;
 }
 
+static int line_geometry_equal(const gui2c_line_object_t *a, const gui2c_line_object_t *b) {
+    if (!a || !b) return 0;
+    return a->x1 == b->x1 &&
+           a->y1 == b->y1 &&
+           a->x2 == b->x2 &&
+           a->y2 == b->y2 &&
+           a->thickness == b->thickness;
+}
+
+static int line_objects_equal(const gui2c_line_object_t *a, const gui2c_line_object_t *b) {
+    if (!a || !b) return 0;
+    return line_geometry_equal(a, b) &&
+           a->fg == b->fg &&
+           a->bg == b->bg;
+}
+
 gui2c_status_t gui2c_object_line_draw(gui2c_server_t *server, const gui2c_line_object_t *obj, gui2c_color_t color) {
     if (!server || !obj || !obj->in_use) {
         return GUI2C_STATUS_ERR_INVALID_ARGUMENT;
@@ -219,6 +235,16 @@ gui2c_status_t gui2c_object_line_update(gui2c_server_t *server, const uint8_t *p
 
     obj = gui2c_server_find_line_object(server, desc.object_id);
     if (!obj) return GUI2C_STATUS_ERR_NOT_FOUND;
+
+    if (had_old && line_objects_equal(&old_copy, obj)) {
+        return GUI2C_STATUS_OK;
+    }
+
+    if (had_old && line_geometry_equal(&old_copy, obj)) {
+        st = gui2c_object_line_draw(server, obj, obj->fg);
+        if (st != GUI2C_STATUS_OK) return st;
+        return gui2c_server_flush(server);
+    }
 
     if (had_old) {
         st = gui2c_object_line_draw(server, &old_copy, old_copy.bg);

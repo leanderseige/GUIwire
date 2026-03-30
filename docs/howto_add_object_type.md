@@ -111,6 +111,7 @@ Then optimize:
 
 - avoid unnecessary clears
 - skip redraws when only color changes inside identical geometry
+- prefer delta updates for value-only widgets so unchanged regions stay untouched
 - batch SPI transfers for large fills
 - avoid full-screen redraws unless necessary
 - keep generic object semantics separate from display-specific fast paths

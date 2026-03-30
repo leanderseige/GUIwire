@@ -174,6 +174,8 @@ bar_update.value = 50000;
 gui2c_client_update_bar(&client, &bar_update);
 ```
 
+On current servers this is typically cheap, because only the changed fill delta needs to be redrawn.
+
 To change a ring value:
 
 ```c
@@ -182,6 +184,8 @@ ring_update.object_id = 260;
 ring_update.value = 50000;
 gui2c_client_update_ring(&client, &ring_update);
 ```
+
+On current servers this is also a value-only delta update. Unchanged ring sectors do not need to be redrawn.
 
 To replace one waveform completely:
 
@@ -227,6 +231,8 @@ wf_multi.samples = samples;
 gui2c_client_update_waveform_shift_multi(&client, &wf_multi);
 ```
 
+This multi-wave form is usually the best choice when several curves advance together, because it reduces packet overhead and gives the server more freedom to use a single optimized redraw path.
+
 ## 6. Keep IDs stable
 
 The server identifies objects by `object_id`.
@@ -263,6 +269,8 @@ If a client command seems to do nothing:
 - look at the server serial log for packet status
 
 Remember that color precision and some rendering details are server-side implementation choices. The client sends desired geometry and colors; the server may map those to the best match for the selected display hardware.
+
+The same rule applies to performance optimizations: partial redraws, column-wise waveform rendering, indexed internal buffers or display-specific acceleration are server-side choices and do not require protocol changes.
 
 ## 10. Good first milestone
 

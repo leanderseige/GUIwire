@@ -123,6 +123,7 @@ Notes:
 - `value` is a `u16` fill level from empty to full
 - supported directions are top-to-bottom, bottom-to-top, left-to-right and right-to-left
 - updates usually only change `value`
+- on the current server, updates redraw only the changed fill delta instead of rebuilding the whole widget
 
 ### Ring object
 
@@ -141,6 +142,7 @@ Notes:
 - filling starts at the lower apex and proceeds clockwise
 - a non-zero `opening_angle_deg` leaves a symmetric gap at the bottom and makes the fill start at the left end of that gap
 - updates usually only change `value`
+- on the current server, value-only updates redraw only the ring sectors whose active/inactive state changed
 
 ### Waveform object
 
@@ -162,6 +164,7 @@ Notes:
 - shifting stores time history right-to-left and redraws the widget from the stored raw data
 - autoscaling uses the current maximum over all stored waveform values in the widget
 - server-side waveform storage limits are hardware-profile dependent, not part of the public client protocol
+- the current ILI9488-oriented server path renders the plot area column-by-column to avoid full-widget blanking and visible flicker
 
 ## Build
 
@@ -232,5 +235,6 @@ Current implementation notes:
 - object types are currently stored in separate arrays
 - `CREATE_*` commands are idempotent on the server and are safe to resend for resync purposes
 - server-side optimization and memory limits can depend on the selected server target profile
+- object updates may use target-specific partial redraw strategies as long as the public object semantics stay unchanged
 - overlapping transparent objects are still a simple model, not a full compositor
 - large filled areas depend heavily on display driver throughput and SPI speed
