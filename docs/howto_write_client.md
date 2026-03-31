@@ -146,24 +146,38 @@ gui2c_client_create_waveform(&client, &wf);
 To change text content:
 
 ```c
-text.text = "Counter 42";
-gui2c_client_update_text(&client, &text);
+gui2c_text_update_t text_update;
+text_update.object_id = text.object_id;
+text_update.fg = text.fg;
+text_update.bg = text.bg;
+text_update.flags = text.flags;
+text_update.zoom = text.zoom;
+text_update.text = "Counter 42";
+gui2c_client_update_text(&client, &text_update);
 ```
 
 To change rect fill color:
 
 ```c
-rect.fill = gui2c_rgb565(255, 0, 0);
-gui2c_client_update_rect(&client, &rect);
+gui2c_rect_update_t rect_update;
+rect_update.object_id = rect.object_id;
+rect_update.fill = gui2c_rgb565(255, 0, 0);
+rect_update.border = rect.border;
+rect_update.flags = rect.flags;
+gui2c_client_update_rect(&client, &rect_update);
 ```
 
-To move a line:
+To change a line color:
 
 ```c
-line.x1 += 5;
-line.x2 += 5;
-gui2c_client_update_line(&client, &line);
+gui2c_line_update_t line_update;
+line_update.object_id = line.object_id;
+line_update.fg = gui2c_rgb565(255, 255, 0);
+line_update.bg = line.bg;
+gui2c_client_update_line(&client, &line_update);
 ```
+
+The current object model treats geometry as create-time state. If you need a different position or size, destroy and recreate the object for now.
 
 To change a bar value:
 

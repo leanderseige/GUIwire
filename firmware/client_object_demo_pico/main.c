@@ -31,15 +31,18 @@ int main(void) {
     gui2c_bar_update_t bar_updates[4];
     gui2c_ring_desc_t ring;
     gui2c_ring_update_t ring_update;
-    gui2c_text_desc_t text;
+    gui2c_text_desc_t title_text;
+    gui2c_text_desc_t counter_text;
+    gui2c_text_update_t counter_text_update;
     gui2c_line_desc_t line_obj;
+    gui2c_line_update_t line_update;
+    gui2c_rect_update_t rect_update;
     gui2c_waveform_desc_t waveform;
     gui2c_waveform_shift_multi_update_t waveform_shift;
     gui2c_color_t waveform_colors[2];
     uint8_t waveform_indices[2];
     uint16_t waveform_samples[2];
     unsigned counter = 0;
-    unsigned line_step = 0;
     unsigned waveform_refresh_tick = 0;
     unsigned slow_update_tick = 0;
     double waveform_phase = 0.0;
@@ -64,17 +67,36 @@ int main(void) {
     sleep_ms(500);
     gui2c_client_destroy_all_objects(&client);
 
-    text.object_id = 10u;
-    text.x = 8u;
-    text.y = 24u;
-    text.w = 240u;
-    text.h = 20u;
-    text.fg = gui2c_rgb565(255, 255, 255);
-    text.bg = gui2c_rgb565(0, 0, 64);
-    text.flags = 0u;
-    text.zoom = 2u;
-    text.text = "Client object mode";
-    gui2c_client_create_text(&client, &text);
+    title_text.object_id = 10u;
+    title_text.x = 8u;
+    title_text.y = 24u;
+    title_text.w = 240u;
+    title_text.h = 20u;
+    title_text.fg = gui2c_rgb565(255, 255, 255);
+    title_text.bg = gui2c_rgb565(0, 0, 64);
+    title_text.flags = 0u;
+    title_text.zoom = 2u;
+    title_text.text = "Client object mode";
+    gui2c_client_create_text(&client, &title_text);
+    client_packet_pause();
+
+    counter_text.object_id = 11u;
+    counter_text.x = 8u;
+    counter_text.y = 52u;
+    counter_text.w = 180u;
+    counter_text.h = 20u;
+    counter_text.fg = gui2c_rgb565(255, 255, 255);
+    counter_text.bg = gui2c_rgb565(0, 0, 64);
+    counter_text.flags = 0u;
+    counter_text.zoom = 2u;
+    counter_text.text = "Counter 0";
+    gui2c_client_create_text(&client, &counter_text);
+    counter_text_update.object_id = counter_text.object_id;
+    counter_text_update.fg = counter_text.fg;
+    counter_text_update.bg = counter_text.bg;
+    counter_text_update.flags = counter_text.flags;
+    counter_text_update.zoom = counter_text.zoom;
+    counter_text_update.text = counter_text.text;
     client_packet_pause();
 
     gui2c_rect_desc_t rect = {
@@ -90,6 +112,10 @@ int main(void) {
 
     gui2c_client_create_rect(&client, &rect);
     client_packet_pause();
+    rect_update.object_id = rect.object_id;
+    rect_update.fill = rect.fill;
+    rect_update.border = rect.border;
+    rect_update.flags = rect.flags;
 
     line_obj.object_id = 200u;
     line_obj.fg = gui2c_rgb565(255, 255, 0);
@@ -101,6 +127,9 @@ int main(void) {
     line_obj.y2 = 100u;
     gui2c_client_create_line(&client, &line_obj);
     client_packet_pause();
+    line_update.object_id = line_obj.object_id;
+    line_update.fg = line_obj.fg;
+    line_update.bg = line_obj.bg;
 
     bars[0].object_id = 210u;
     bars[0].x = 190u;
@@ -171,48 +200,31 @@ int main(void) {
 
     while (1) {
         char line[32];
-        double angle;
         uint16_t sin_sample;
         uint16_t cos_sample;
-        int half_dx;
-        int half_dy;
 
         if (slow_update_tick == 0u) {
             unsigned i;
 
             snprintf(line, sizeof(line), "Counter %u", counter++);
-            text.object_id = 11u;
-            text.x = 8u;
-            text.y = 52u;
-            text.w = 180u;
-            text.h = 20u;
-            text.fg = gui2c_rgb565(255, 255, 255);
-            text.bg = gui2c_rgb565(0, 0, 64);
-            text.flags = 0u;
-            text.zoom = 2u;
-            text.text = line;
-            gui2c_client_update_text(&client, &text);
+            counter_text_update.text = line;
+            gui2c_client_update_text(&client, &counter_text_update);
             client_packet_pause();
 
             {
                 uint8_t r = (uint8_t)(rand() & 0xFF);
                 uint8_t g = (uint8_t)(rand() & 0xFF);
                 uint8_t b = (uint8_t)(rand() & 0xFF);
-                rect.fill = gui2c_rgb565(r, g, b);
+                rect_update.fill = gui2c_rgb565(r, g, b);
             }
-            gui2c_client_update_rect(&client, &rect);
+            gui2c_client_update_rect(&client, &rect_update);
             client_packet_pause();
 
-            angle = ((double)line_step) * (M_PI / 8.0);
-            half_dx = (int)lround(cos(angle) * 15.0);
-            half_dy = (int)lround(sin(angle) * 15.0);
-            line_obj.x1 = (uint16_t)(50 + half_dx);
-            line_obj.y1 = (uint16_t)(100 + half_dy);
-            line_obj.x2 = (uint16_t)(50 - half_dx);
-            line_obj.y2 = (uint16_t)(100 - half_dy);
-            gui2c_client_update_line(&client, &line_obj);
+            line_update.fg = gui2c_rgb565((uint8_t)(128 + 127 * sin(waveform_phase)),
+                                          (uint8_t)(128 + 127 * sin(waveform_phase + 2.09439510239)),
+                                          (uint8_t)(128 + 127 * sin(waveform_phase + 4.18879020479)));
+            gui2c_client_update_line(&client, &line_update);
             client_packet_pause();
-            line_step = (line_step + 1u) & 15u;
 
             for (i = 0u; i < 4u; ++i) {
                 double bar_phase = waveform_phase + ((double)i * (M_PI / 2.0));

@@ -52,6 +52,31 @@ static gui2c_status_t parse_text_desc(const uint8_t *payload, uint16_t payload_l
     return GUI2C_STATUS_OK;
 }
 
+static gui2c_status_t parse_text_update(const uint8_t *payload,
+                                        uint16_t payload_len,
+                                        gui2c_text_update_t *out_update,
+                                        char *text_buf,
+                                        size_t text_buf_len) {
+    uint8_t text_len;
+
+    if (!payload || !out_update || !text_buf) return GUI2C_STATUS_ERR_INVALID_ARGUMENT;
+    if (payload_len < 9u) return GUI2C_STATUS_ERR_PROTOCOL;
+
+    text_len = payload[8];
+    if ((uint16_t)(9u + text_len) != payload_len) return GUI2C_STATUS_ERR_PROTOCOL;
+    if ((size_t)text_len >= text_buf_len) return GUI2C_STATUS_ERR_BUFFER_TOO_SMALL;
+
+    out_update->object_id = gui2c_read_u16le(&payload[0]);
+    out_update->fg = gui2c_read_u16le(&payload[2]);
+    out_update->bg = gui2c_read_u16le(&payload[4]);
+    out_update->flags = payload[6];
+    out_update->zoom = payload[7] ? payload[7] : 1u;
+    memcpy(text_buf, &payload[9], text_len);
+    text_buf[text_len] = '\0';
+    out_update->text = text_buf;
+    return GUI2C_STATUS_OK;
+}
+
 static gui2c_status_t clear_text_object(gui2c_server_t *server, const gui2c_text_object_t *obj) {
     return gui2c_server_fill_bg(server, obj->x, obj->y, obj->w, obj->h, obj->bg);
 }
@@ -95,7 +120,8 @@ static gui2c_status_t redraw_changed_cells(gui2c_server_t *server, const gui2c_t
     size_t old_len, new_len, max_len, i;
     uint16_t clip_x, clip_y, clip_w, clip_h;
     if (!server || !new_obj) return GUI2C_STATUS_ERR_INVALID_ARGUMENT;
-    if (!old_obj || old_obj->x != new_obj->x || old_obj->y != new_obj->y || old_obj->w != new_obj->w || old_obj->h != new_obj->h || old_obj->fg != new_obj->fg || old_obj->bg != new_obj->bg || old_obj->flags != new_obj->flags || old_obj->zoom != new_obj->zoom) {
+    if (!old_obj || old_obj->fg != new_obj->fg || old_obj->bg != new_obj->bg ||
+        old_obj->flags != new_obj->flags || old_obj->zoom != new_obj->zoom) {
         return gui2c_object_text_draw(server, new_obj);
     }
     clip_x = text_content_x(new_obj);
@@ -125,11 +151,7 @@ static gui2c_status_t redraw_changed_cells(gui2c_server_t *server, const gui2c_t
 
 static int text_objects_equal(const gui2c_text_object_t *a, const gui2c_text_object_t *b) {
     if (!a || !b) return 0;
-    return a->x == b->x &&
-           a->y == b->y &&
-           a->w == b->w &&
-           a->h == b->h &&
-           a->fg == b->fg &&
+    return a->fg == b->fg &&
            a->bg == b->bg &&
            a->flags == b->flags &&
            a->zoom == b->zoom &&
@@ -148,13 +170,28 @@ gui2c_status_t gui2c_object_text_create(gui2c_server_t *server, const uint8_t *p
 }
 
 gui2c_status_t gui2c_object_text_update(gui2c_server_t *server, const uint8_t *payload, uint16_t payload_len) {
-    gui2c_text_desc_t desc; char text_buf[GUI2C_MAX_TEXT_LEN + 1]; gui2c_text_object_t old_copy; gui2c_text_object_t *obj; int had_old = 0; gui2c_status_t st;
-    st = parse_text_desc(payload, payload_len, &desc, text_buf, sizeof(text_buf)); if (st != GUI2C_STATUS_OK) return st;
-    obj = gui2c_server_find_text_object(server, desc.object_id); if (obj) { old_copy = *obj; had_old = 1; }
-    st = create_or_replace_text(server, &desc, 1); if (st != GUI2C_STATUS_OK) return st;
-    obj = gui2c_server_find_text_object(server, desc.object_id);
-    if (had_old && text_objects_equal(&old_copy, obj)) return GUI2C_STATUS_OK;
-    st = redraw_changed_cells(server, had_old ? &old_copy : NULL, obj); if (st != GUI2C_STATUS_OK) return st;
+    gui2c_text_update_t update;
+    char text_buf[GUI2C_MAX_TEXT_LEN + 1];
+    gui2c_text_object_t old_copy;
+    gui2c_text_object_t *obj;
+    gui2c_status_t st;
+
+    st = parse_text_update(payload, payload_len, &update, text_buf, sizeof(text_buf));
+    if (st != GUI2C_STATUS_OK) return st;
+
+    obj = gui2c_server_find_text_object(server, update.object_id);
+    if (!obj) return GUI2C_STATUS_ERR_NOT_FOUND;
+
+    old_copy = *obj;
+    obj->fg = update.fg;
+    obj->bg = update.bg;
+    obj->flags = update.flags;
+    obj->zoom = update.zoom ? update.zoom : 1u;
+    strncpy(obj->text, update.text, GUI2C_MAX_TEXT_LEN);
+    obj->text[GUI2C_MAX_TEXT_LEN] = '\0';
+
+    if (text_objects_equal(&old_copy, obj)) return GUI2C_STATUS_OK;
+    st = redraw_changed_cells(server, &old_copy, obj); if (st != GUI2C_STATUS_OK) return st;
     return gui2c_server_flush(server);
 }
 

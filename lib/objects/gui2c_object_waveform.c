@@ -759,23 +759,6 @@ static gui2c_status_t waveform_render_plot_columns(gui2c_server_t *server, const
     return GUI2C_STATUS_OK;
 }
 
-static int waveform_plot_compatible(const gui2c_waveform_object_t *a, const gui2c_waveform_object_t *b) {
-    uint8_t wave_idx;
-
-    if (!a || !b) return 0;
-    if (a->x != b->x || a->y != b->y || a->w != b->w || a->h != b->h ||
-        a->border != b->border || a->bg != b->bg || a->flags != b->flags ||
-        a->wave_count != b->wave_count) {
-        return 0;
-    }
-
-    for (wave_idx = 0u; wave_idx < a->wave_count; ++wave_idx) {
-        if (a->wave_colors[wave_idx] != b->wave_colors[wave_idx]) return 0;
-    }
-
-    return 1;
-}
-
 static gui2c_status_t waveform_render_plot_columns_diff(gui2c_server_t *server,
                                                         const gui2c_waveform_object_t *old_obj,
                                                         const gui2c_waveform_object_t *new_obj) {
@@ -789,7 +772,6 @@ static gui2c_status_t waveform_render_plot_columns_diff(gui2c_server_t *server,
     uint8_t wave_idx;
 
     if (!server || !old_obj || !new_obj || !new_obj->in_use) return GUI2C_STATUS_ERR_INVALID_ARGUMENT;
-    if (!waveform_plot_compatible(old_obj, new_obj)) return gui2c_object_waveform_draw(server, new_obj);
 
     plot_x = waveform_plot_x(new_obj);
     plot_y = waveform_plot_y(new_obj);

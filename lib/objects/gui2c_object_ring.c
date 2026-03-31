@@ -187,13 +187,7 @@ static gui2c_status_t gui2c_object_ring_draw_diff(gui2c_server_t *server,
     int rel_x;
 
     if (!server || !new_obj || !new_obj->in_use) return GUI2C_STATUS_ERR_INVALID_ARGUMENT;
-
-    if (!old_obj || old_obj->radius != new_obj->radius || old_obj->cx != new_obj->cx || old_obj->cy != new_obj->cy ||
-        old_obj->inner_radius != new_obj->inner_radius || old_obj->opening_angle_deg != new_obj->opening_angle_deg ||
-        old_obj->bg != new_obj->bg || old_obj->fg_active != new_obj->fg_active ||
-        old_obj->fg_inactive != new_obj->fg_inactive) {
-        return gui2c_object_ring_draw(server, new_obj);
-    }
+    if (!old_obj) return gui2c_object_ring_draw(server, new_obj);
 
     if (new_obj->radius == 0u) return GUI2C_STATUS_OK;
 
@@ -287,6 +281,7 @@ gui2c_status_t gui2c_object_ring_update(gui2c_server_t *server, const uint8_t *p
 
     obj = gui2c_server_find_ring_object(server, update.object_id);
     if (!obj) return GUI2C_STATUS_ERR_NOT_FOUND;
+    if (obj->value == update.value) return GUI2C_STATUS_OK;
 
     old_obj = *obj;
     obj->value = update.value;

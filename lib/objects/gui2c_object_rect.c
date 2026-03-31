@@ -19,6 +19,18 @@ static gui2c_status_t parse_rect_desc(const uint8_t *payload, uint16_t payload_l
     return GUI2C_STATUS_OK;
 }
 
+static gui2c_status_t parse_rect_update(const uint8_t *payload, uint16_t payload_len, gui2c_rect_update_t *out_update) {
+    if (!payload || !out_update) return GUI2C_STATUS_ERR_INVALID_ARGUMENT;
+    if (payload_len != 7u) return GUI2C_STATUS_ERR_PROTOCOL;
+
+    out_update->object_id = gui2c_read_u16le(&payload[0]);
+    out_update->fill = gui2c_read_u16le(&payload[2]);
+    out_update->border = gui2c_read_u16le(&payload[4]);
+    out_update->flags = payload[6];
+
+    return GUI2C_STATUS_OK;
+}
+
 static gui2c_status_t clear_rect_object(gui2c_server_t *server, const gui2c_rect_object_t *obj) {
     if (!server || !obj) return GUI2C_STATUS_ERR_INVALID_ARGUMENT;
     return gui2c_server_fill_bg(server, obj->x, obj->y, obj->w, obj->h, gui2c_rgb565(0,0,0));
@@ -100,40 +112,29 @@ gui2c_status_t gui2c_object_rect_create(gui2c_server_t *server, const uint8_t *p
 }
 
 gui2c_status_t gui2c_object_rect_update(gui2c_server_t *server, const uint8_t *payload, uint16_t payload_len) {
-    gui2c_rect_desc_t desc;
-    gui2c_rect_object_t old_copy;
+    gui2c_rect_update_t update;
     gui2c_rect_object_t *obj;
     gui2c_status_t st;
-    int had_old = 0;
-    int need_clear_old = 0;
 
-    st = parse_rect_desc(payload, payload_len, &desc);
+    st = parse_rect_update(payload, payload_len, &update);
     if (st != GUI2C_STATUS_OK) return st;
 
-    obj = gui2c_server_find_rect_object(server, desc.object_id);
-    if (obj) {
-        old_copy = *obj;
-        had_old = 1;
-    }
-
-    st = create_or_replace_rect(server, &desc, 1);
-    if (st != GUI2C_STATUS_OK) return st;
-
-    obj = gui2c_server_find_rect_object(server, desc.object_id);
+    obj = gui2c_server_find_rect_object(server, update.object_id);
     if (!obj) return GUI2C_STATUS_ERR_NOT_FOUND;
 
-    if (had_old) {
-        if ((desc.flags & GUI2C_RECT_FLAG_FILL_TRANSPARENT) != 0u) {
-            need_clear_old = 1;
-        } else if (!rect_geometry_equal(&old_copy, &desc)) {
-            need_clear_old = 1;
-        }
+    if (obj->fill == update.fill && obj->border == update.border && obj->flags == update.flags) {
+        return GUI2C_STATUS_OK;
     }
 
-    if (need_clear_old) {
-        st = clear_rect_object(server, &old_copy);
+    if ((update.flags & GUI2C_RECT_FLAG_FILL_TRANSPARENT) != 0u ||
+        (obj->flags & GUI2C_RECT_FLAG_FILL_TRANSPARENT) != 0u) {
+        st = clear_rect_object(server, obj);
         if (st != GUI2C_STATUS_OK) return st;
     }
+
+    obj->fill = update.fill;
+    obj->border = update.border;
+    obj->flags = update.flags;
 
     st = gui2c_object_rect_draw(server, obj);
     if (st != GUI2C_STATUS_OK) return st;
@@ -154,12 +155,4 @@ gui2c_status_t gui2c_object_rect_destroy(gui2c_server_t *server, gui2c_object_id
     memset(obj, 0, sizeof(*obj));
 
     return gui2c_server_flush(server);
-}
-
-static int rect_geometry_equal(const gui2c_rect_object_t *a, const gui2c_rect_desc_t *b) {
-    if (!a || !b) return 0;
-    return a->x == b->x &&
-           a->y == b->y &&
-           a->w == b->w &&
-           a->h == b->h;
 }

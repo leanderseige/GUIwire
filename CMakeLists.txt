@@ -63,4 +63,5 @@ if(GUI2C_BUILD_PICO_FIRMWARE)
 
     add_subdirectory(firmware/server_ili9488_pico)
     add_subdirectory(firmware/client_object_demo_pico)
+    add_subdirectory(firmware/client_brain_module_pico)
 endif()

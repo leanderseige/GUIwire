@@ -63,7 +63,15 @@ Payload layout:
 
 ### `UPDATE_TEXT` (`0x12`)
 
-Same payload layout as `CREATE_TEXT`.
+Payload layout:
+
+- `u16 object_id`
+- `u16 fg`
+- `u16 bg`
+- `u8 flags`
+- `u8 zoom`
+- `u8 text_len`
+- `text_len` bytes text
 
 ### `DESTROY_OBJECT` (`0x13`)
 
@@ -88,7 +96,12 @@ Payload layout:
 
 ### `UPDATE_RECT` (`0x15`)
 
-Same payload layout as `CREATE_RECT`.
+Payload layout:
+
+- `u16 object_id`
+- `u16 fill`
+- `u16 border`
+- `u8 flags`
 
 ### `CREATE_LINE` (`0x16`)
 
@@ -105,7 +118,11 @@ Payload layout:
 
 ### `UPDATE_LINE` (`0x17`)
 
-Same payload layout as `CREATE_LINE`.
+Payload layout:
+
+- `u16 object_id`
+- `u16 fg`
+- `u16 bg`
 
 ### `CREATE_BAR` (`0x1A`)
 
@@ -204,7 +221,10 @@ Current server behavior:
 
 - `CREATE_TEXT`, `CREATE_RECT`, `CREATE_LINE`, `CREATE_BAR`, `CREATE_RING` and `CREATE_WAVEFORM` are idempotent
 - resending a matching `CREATE_*` for an already existing object returns `OK` and leaves the object unchanged
-- `UPDATE_TEXT`, `UPDATE_RECT` and `UPDATE_LINE` can still create a missing object from the full descriptor payload
+- geometry and layout are currently defined by `CREATE_*` and remain fixed afterwards
+- `UPDATE_TEXT` requires that the text object already exists
+- `UPDATE_RECT` requires that the rect object already exists
+- `UPDATE_LINE` requires that the line object already exists
 - `UPDATE_BAR` requires that the bar object already exists, because the update payload contains only `object_id` and `value`
 - `UPDATE_RING` requires that the ring object already exists, because the update payload contains only `object_id` and `value`
 - `UPDATE_WAVEFORM` requires that the waveform object already exists, because the update payload does not contain geometry, border or color configuration

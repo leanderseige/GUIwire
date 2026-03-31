@@ -75,7 +75,8 @@ Fields:
 Notes:
 
 - text background can be opaque or transparent
-- text updates currently redraw only changed character cells when possible
+- geometry is defined at create time
+- updates change text/style only and currently redraw only changed character cells when possible
 
 ### Rect object
 
@@ -92,6 +93,8 @@ Notes:
 - fill can be opaque or transparent
 - border is optional
 - border is always 1 pixel and drawn inside the rectangle bounds
+- geometry is defined at create time
+- updates change fill/border/flags only
 
 ### Line object
 
@@ -104,8 +107,8 @@ Fields:
 
 Notes:
 
-- update clears the previous line by redrawing it with `bg`
-- the new line is then drawn with `fg`
+- geometry is defined at create time
+- updates change colors only
 - `thickness = 0` is treated as `1`
 
 ### Bar object
@@ -189,6 +192,7 @@ find . -name "*.uf2"
 
 - `gui2c_server_ili9488_pico`
 - `gui2c_client_object_demo_pico`
+- `gui2c_client_brain_module_pico`
 
 ## Repository layout
 
@@ -234,6 +238,7 @@ Current implementation notes:
 - there is no generic z-order system yet
 - object types are currently stored in separate arrays
 - `CREATE_*` commands are idempotent on the server and are safe to resend for resync purposes
+- object geometry is currently immutable after `CREATE_*`
 - server-side optimization and memory limits can depend on the selected server target profile
 - object updates may use target-specific partial redraw strategies as long as the public object semantics stay unchanged
 - overlapping transparent objects are still a simple model, not a full compositor

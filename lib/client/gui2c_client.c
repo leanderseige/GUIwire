@@ -75,8 +75,26 @@ gui2c_status_t gui2c_client_create_text(gui2c_client_t *client, const gui2c_text
     return gui2c_client_send_text_like(client, GUI2C_CMD_CREATE_TEXT, desc);
 }
 
-gui2c_status_t gui2c_client_update_text(gui2c_client_t *client, const gui2c_text_desc_t *desc) {
-    return gui2c_client_send_text_like(client, GUI2C_CMD_UPDATE_TEXT, desc);
+gui2c_status_t gui2c_client_update_text(gui2c_client_t *client, const gui2c_text_update_t *update) {
+    uint8_t payload[11 + GUI2C_MAX_TEXT_LEN];
+    size_t text_len;
+    uint16_t payload_len;
+
+    if (!client || !update || !update->text) return GUI2C_STATUS_ERR_INVALID_ARGUMENT;
+
+    text_len = strlen(update->text);
+    if (text_len > GUI2C_MAX_TEXT_LEN) return GUI2C_STATUS_ERR_BUFFER_TOO_SMALL;
+
+    gui2c_write_u16le(&payload[0], update->object_id);
+    gui2c_write_u16le(&payload[2], update->fg);
+    gui2c_write_u16le(&payload[4], update->bg);
+    payload[6] = update->flags;
+    payload[7] = update->zoom;
+    payload[8] = (uint8_t)text_len;
+    memcpy(&payload[9], update->text, text_len);
+
+    payload_len = (uint16_t)(9 + text_len);
+    return gui2c_client_send_raw(client, GUI2C_CMD_UPDATE_TEXT, payload, payload_len);
 }
 
 gui2c_status_t gui2c_client_destroy_object(gui2c_client_t *client, gui2c_object_id_t object_id) {
@@ -108,8 +126,17 @@ gui2c_status_t gui2c_client_create_rect(gui2c_client_t *client, const gui2c_rect
     return gui2c_client_send_rect_like(client, GUI2C_CMD_CREATE_RECT, desc);
 }
 
-gui2c_status_t gui2c_client_update_rect(gui2c_client_t *client, const gui2c_rect_desc_t *desc) {
-    return gui2c_client_send_rect_like(client, GUI2C_CMD_UPDATE_RECT, desc);
+gui2c_status_t gui2c_client_update_rect(gui2c_client_t *client, const gui2c_rect_update_t *update) {
+    uint8_t payload[7];
+
+    if (!client || !update) return GUI2C_STATUS_ERR_INVALID_ARGUMENT;
+
+    gui2c_write_u16le(&payload[0], update->object_id);
+    gui2c_write_u16le(&payload[2], update->fill);
+    gui2c_write_u16le(&payload[4], update->border);
+    payload[6] = update->flags;
+
+    return gui2c_client_send_raw(client, GUI2C_CMD_UPDATE_RECT, payload, 7u);
 }
 
 static gui2c_status_t gui2c_client_send_line_like(gui2c_client_t *client,
@@ -135,8 +162,16 @@ gui2c_status_t gui2c_client_create_line(gui2c_client_t *client, const gui2c_line
     return gui2c_client_send_line_like(client, GUI2C_CMD_CREATE_LINE, desc);
 }
 
-gui2c_status_t gui2c_client_update_line(gui2c_client_t *client, const gui2c_line_desc_t *desc) {
-    return gui2c_client_send_line_like(client, GUI2C_CMD_UPDATE_LINE, desc);
+gui2c_status_t gui2c_client_update_line(gui2c_client_t *client, const gui2c_line_update_t *update) {
+    uint8_t payload[6];
+
+    if (!client || !update) return GUI2C_STATUS_ERR_INVALID_ARGUMENT;
+
+    gui2c_write_u16le(&payload[0], update->object_id);
+    gui2c_write_u16le(&payload[2], update->fg);
+    gui2c_write_u16le(&payload[4], update->bg);
+
+    return gui2c_client_send_raw(client, GUI2C_CMD_UPDATE_LINE, payload, 6u);
 }
 
 static gui2c_status_t gui2c_client_send_bar_like(gui2c_client_t *client,

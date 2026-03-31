@@ -88,6 +88,15 @@ typedef struct {
 
 typedef struct {
     gui2c_object_id_t object_id;
+    gui2c_color_t fg;
+    gui2c_color_t bg;
+    uint8_t flags;
+    uint8_t zoom;
+    const char *text;
+} gui2c_text_update_t;
+
+typedef struct {
+    gui2c_object_id_t object_id;
     uint16_t x;
     uint16_t y;
     uint16_t w;
@@ -99,6 +108,13 @@ typedef struct {
 
 typedef struct {
     gui2c_object_id_t object_id;
+    gui2c_color_t fill;
+    gui2c_color_t border;
+    uint8_t flags;
+} gui2c_rect_update_t;
+
+typedef struct {
+    gui2c_object_id_t object_id;
     uint16_t x1;
     uint16_t y1;
     uint16_t x2;
@@ -107,6 +123,12 @@ typedef struct {
     gui2c_color_t bg;
     uint8_t thickness;
 } gui2c_line_desc_t;
+
+typedef struct {
+    gui2c_object_id_t object_id;
+    gui2c_color_t fg;
+    gui2c_color_t bg;
+} gui2c_line_update_t;
 
 typedef struct {
     gui2c_object_id_t object_id;
