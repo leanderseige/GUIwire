@@ -1,3 +1,8 @@
+<!--
+SPDX-License-Identifier: MIT
+Authors: any:frequency, seige.digital GbR, Leander Seige (2026)
+-->
+
 # GUI2C
 
 GUI2C is a compact binary protocol for driving small display modules from
