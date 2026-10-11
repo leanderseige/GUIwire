@@ -1,0 +1,28 @@
+/* SPDX-License-Identifier: MIT */
+
+#ifndef GUIWIRE_SERVER_ILI9488_BOARD_CONFIG_H
+#define GUIWIRE_SERVER_ILI9488_BOARD_CONFIG_H
+
+#define GUIWIRE_UART_PORT uart0
+#define GUIWIRE_PIN_GUIWIRE_TX 0u
+#define GUIWIRE_PIN_GUIWIRE_RX 1u
+#include "guiwire/guiwire_pico_uart_pinmap.h"
+#if !GUIWIRE_PICO_UART0_PINS_VALID(GUIWIRE_PIN_GUIWIRE_TX, GUIWIRE_PIN_GUIWIRE_RX)
+#error "RP2040 UART0 TX/RX pins are not a valid hardware pair"
+#endif
+
+#define GUIWIRE_SPI_PORT spi0
+#define GUIWIRE_SPI_BAUDRATE 40000000u
+#define GUIWIRE_PIN_LCD_MOSI 3u
+#define GUIWIRE_PIN_LCD_MISO 4u
+#define GUIWIRE_PIN_LCD_SCK  2u
+#define GUIWIRE_PIN_LCD_CS   5
+#define GUIWIRE_PIN_LCD_DC   6
+#define GUIWIRE_PIN_LCD_RST  7
+#define GUIWIRE_PIN_LCD_BL   8
+
+#define GUIWIRE_DISPLAY_WIDTH  320u
+#define GUIWIRE_DISPLAY_HEIGHT 480u
+#define GUIWIRE_DISPLAY_ROTATION 0u
+
+#endif

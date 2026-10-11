@@ -3,396 +3,327 @@ SPDX-License-Identifier: MIT
 Authors: any:frequency, seige.digital GbR, Leander Seige (2026)
 -->
 
-# GUI2C Protocol
+# GUIwire Protocol
 
-## Basics
+This document is the detailed packet registry for the normative rules in
+[`GUIwire.md`](../GUIwire.md). All multi-byte integers are unsigned unless
+stated otherwise and are encoded little-endian.
 
-GUI2C packets are binary and compact.
+## Physical and link profile
 
-All multi-byte integers are little-endian.
+The standard transport is an asynchronous byte stream over one shared DATA
+conductor and GND. The mandatory startup rate is **9600 baud, 8 data bits, no
+parity, one stop bit (8N1)**. Optional rates are negotiated at the application
+layer after `PING`; the reference profiles use 38400 and 57600 baud. The
+transceiver may invert the signal internally; the application bytes are not
+inverted.
 
-A packet consists of:
+The Host schedules every exchange. A transmitter releases DATA after its stop
+bit. The other participant waits at least two character times before
+transmitting. A receiver must abandon an incomplete frame after a session
+timeout and resume searching for `SYNC`.
 
-- a fixed-size header
-- a payload of `payload_len` bytes
+### Link frame
 
-## Header
+After `SYNC`, the following bytes are escaped as one body:
 
-| Offset | Size | Meaning |
-|---|---:|---|
-| 0 | 1 | magic0 = `'G'` |
-| 1 | 1 | magic1 = `'2'` |
-| 2 | 1 | protocol version |
-| 3 | 1 | command |
-| 4 | 2 | payload length |
+```text
+┌──────┬────────────┬───────────────┬────────┐
+│ SYNC │ frame_len │ application   │ CRC-16 │
+│ 0x7E │ u16 LE    │ packet        │ u16 LE │
+└──────┴────────────┴───────────────┴────────┘
+```
 
-The header is followed immediately by `payload_len` payload bytes.
+`frame_len` is the number of unescaped bytes in the application packet. It
+includes the six-byte application header and its payload. Valid values are
+`6..256`. The CRC is CRC-16/CCITT-FALSE, initialized to `0xFFFF`, calculated
+over the unescaped `frame_len` field followed by the complete application
+packet, and appended least-significant byte first.
 
-## Commands
+Byte stuffing is applied to `frame_len`, the application packet and the CRC:
+
+- `0x7E` becomes `0x7D 0x5E`
+- `0x7D` becomes `0x7D 0x5D`
+
+Any other `0x7D xx` sequence is invalid. A new `SYNC` abandons the current
+candidate frame and starts a new one. CRC failures and invalid lengths are
+discarded without executing the application command.
+
+### Application packet
+
+```text
+┌────────┬────────┬─────────┬────────┬────────────┬─────────┐
+│ magic0 │ magic1 │ version │ command│ payload_len│ payload │
+│  'G'   │  '2'   │   u8    │  u8    │    u16 LE  │   ...   │
+└────────┴────────┴─────────┴────────┴────────────┴─────────┘
+```
+
+`magic0` and `magic1` are ASCII `G` and `2`. The second byte is retained
+for application-packet compatibility; it does not describe the GUIwire
+electrical layer. `version` is `0x01` for this document. `payload_len`
+must equal the remaining packet length. Unknown versions and commands are
+ignored after the frame has been validated.
+
+## Turnaround and scheduling
+
+The Host sends a request and then releases the line. The Device may send one
+response frame after the turnaround interval. `PING` receives a `PING`
+response; `POLL` receives exactly one queued Device packet, or `NO_DATA`.
+
+The Host must not start another frame until the Device has released the line
+or the response timeout has elapsed. At 9600 baud, implementations should
+allow at least 50 ms for a maximum-size response, including processing time.
+The timeout must be increased if a lower baud rate is selected.
+
+On disconnect, reset or timeout, both sides discard partial frames. The Device
+may rebuild its queued interface from its current state; after such a
+reconnection event, the Host should treat the next `PING` response as a new
+session and clear all cached objects.
+
+## Hot-patch session lifecycle
+
+The TS cable has no presence conductor. An unplugged DATA line is
+indistinguishable from an idle line, so presence is established by valid
+request/response traffic.
+
+While connected, the Host should send `POLL` at least every 100 ms. It
+declares the session lost after three consecutive response timeouts or 500 ms
+without a valid response. At that point it must stop interaction traffic,
+discard partial input, clear all Device-owned objects and restart discovery
+with `PING`. The display should show a neutral no-device state while
+discovery is pending.
+
+The Device expires its session after at least 300 ms without a valid Host
+frame. It stops transmitting, discards its pending GUI queue and marks the
+session inactive. The Device's functional state is not reset by this timeout.
+
+After a new `PING` response, the new Device must queue the following initial
+sequence:
+
+1. `DESTROY_ALL_OBJECTS`
+2. `HELLO_STRING`
+3. all current `CREATE_*` descriptors
+4. current `UPDATE_*` state packets, where required
+
+The Host must not render Device-owned object packets until it has received the
+initial `DESTROY_ALL_OBJECTS`. It then polls until `NO_DATA` and renders the
+new complete scene. This ordering makes a cable move from Device A to Device B
+safe even when Device A was interrupted in the middle of a frame.
+
+The cable itself has no state machine; the Host, the previous Device and the
+new Device perform the handover through timeout, discovery and resynchronization.
+
+## Command registry
+
+| Command | Value | Direction | Payload |
+|---|---:|---|---|
+| `PING` | `0x01` | Host ↔ Device | none |
+| `HELLO_STRING` | `0x02` | Device → Host | raw UTF-8 bytes |
+| `POLL` | `0x03` | Host → Device | none |
+| `NO_DATA` | `0x04` | Device → Host | none |
+| `GET_LINK_INFO` | `0x05` | Host → Device | none |
+| `LINK_INFO` | `0x06` | Device → Host | `u8 count`, then `count × u32 baud` |
+| `SET_BAUD` | `0x07` | Host → Device | `u32 baud`, `u8 token` |
+| `BAUD_ACK` | `0x08` | Device → Host | `u32 baud`, `u8 token` |
+| `DESTROY_ALL_OBJECTS` | `0x10` | Device → Host | none |
+| `CREATE_TEXT` | `0x11` | Device → Host | text descriptor |
+| `UPDATE_TEXT` | `0x12` | Device → Host | text state |
+| `DESTROY_OBJECT` | `0x13` | Device → Host | `u16 object_id` |
+| `CREATE_RECT` | `0x14` | Device → Host | rectangle descriptor |
+| `UPDATE_RECT` | `0x15` | Device → Host | rectangle state |
+| `CREATE_LINE` | `0x16` | Device → Host | line descriptor |
+| `UPDATE_LINE` | `0x17` | Device → Host | line state |
+| `CREATE_WAVEFORM` | `0x18` | Device → Host | waveform descriptor |
+| `UPDATE_WAVEFORM` | `0x19` | Device → Host | waveform update |
+| `CREATE_BAR` | `0x1A` | Device → Host | bar descriptor |
+| `UPDATE_BAR` | `0x1B` | Device → Host | bar state |
+| `CREATE_RING` | `0x1C` | Device → Host | ring descriptor |
+| `UPDATE_RING` | `0x1D` | Device → Host | ring state |
+
+The Device queues packets in order. A Host executes only complete, CRC-valid
+packets. The object commands are deliberately retained as an immediate-mode
+rendering profile; a future semantic widget profile will use new commands.
 
 ### `PING` (`0x01`)
 
-Payload: none
-
-Used for connectivity tests.
+Payload: none. A peer replies with a `PING` packet containing no payload.
 
 ### `HELLO_STRING` (`0x02`)
 
-Payload:
+Payload: raw UTF-8 bytes without a terminating NUL. This is a diagnostic
+identity string, not a required manufacturer/product registry.
 
-- bytes `0..n-1`: raw UTF-8 text bytes without terminating NUL
+### `POLL` (`0x03`) and `NO_DATA` (`0x04`)
 
-This is currently a simple diagnostic string.
+Both payloads are empty. `POLL` grants the Device one response opportunity.
+The Device returns the next queued packet or `NO_DATA` if its queue is empty.
+
+### Link-rate negotiation (`0x05`..`0x08`)
+
+`GET_LINK_INFO` has an empty payload. The Device answers with `LINK_INFO`:
+
+```text
+u8 count, u32 baud[count]
+```
+
+The baud values are little-endian and `count` must be between 1 and 8.
+`SET_BAUD` is sent at the current rate:
+
+```text
+u32 baud, u8 token
+```
+
+The Device sends `BAUD_ACK` with the same values at the current rate and only
+then changes its UART configuration. The Host changes its UART after receiving
+and validating that acknowledgement. The token is nonzero and lets each side
+discard stale acknowledgements after a cable move or timeout. A failed or
+unsupported selection is not acknowledged. Both sides must retain a fallback
+to the 9600-baud startup rate.
 
 ### `DESTROY_ALL_OBJECTS` (`0x10`)
 
-Payload: none
+Payload: none. The Host deletes all Device-owned objects. Object id `0` is
+reserved for Host-owned content.
 
-Deletes all client-owned objects while preserving server object id `0`.
+### Text
 
-### `CREATE_TEXT` (`0x11`)
+`CREATE_TEXT` (`0x11`) payload:
 
-Payload layout:
+```text
+u16 object_id, u16 x, u16 y, u16 w, u16 h,
+u16 fg, u16 bg, u8 flags, u8 zoom, u8 text_len, text[text_len]
+```
 
-- `u16 object_id`
-- `u16 x`
-- `u16 y`
-- `u16 w`
-- `u16 h`
-- `u16 fg`
-- `u16 bg`
-- `u8 flags`
-- `u8 zoom`
-- `u8 text_len`
-- `text_len` bytes text
+`UPDATE_TEXT` (`0x12`) payload:
 
-### `UPDATE_TEXT` (`0x12`)
+```text
+u16 object_id, u16 fg, u16 bg, u8 flags, u8 zoom,
+u8 text_len, text[text_len]
+```
 
-Payload layout:
+Text is UTF-8. `text_len` is a byte count and must not exceed 64.
 
-- `u16 object_id`
-- `u16 fg`
-- `u16 bg`
-- `u8 flags`
-- `u8 zoom`
-- `u8 text_len`
-- `text_len` bytes text
+### Rectangle
 
-### `DESTROY_OBJECT` (`0x13`)
+`CREATE_RECT` (`0x14`) payload:
 
-Payload:
+```text
+u16 object_id, u16 x, u16 y, u16 w, u16 h,
+u16 fill, u16 border, u8 flags
+```
 
-- `u16 object_id`
+`UPDATE_RECT` (`0x15`) payload:
 
-The server destroys the matching object by id.
+```text
+u16 object_id, u16 fill, u16 border, u8 flags
+```
 
-### `CREATE_RECT` (`0x14`)
+### Line
 
-Payload layout:
+`CREATE_LINE` (`0x16`) payload:
 
-- `u16 object_id`
-- `u16 x`
-- `u16 y`
-- `u16 w`
-- `u16 h`
-- `u16 fill`
-- `u16 border`
-- `u8 flags`
+```text
+u16 object_id, u16 x1, u16 y1, u16 x2, u16 y2,
+u16 fg, u16 bg, u8 thickness
+```
 
-### `UPDATE_RECT` (`0x15`)
+`UPDATE_LINE` (`0x17`) payload:
 
-Payload layout:
+```text
+u16 object_id, u16 fg, u16 bg
+```
 
-- `u16 object_id`
-- `u16 fill`
-- `u16 border`
-- `u8 flags`
+### Bar
 
-### `CREATE_LINE` (`0x16`)
+`CREATE_BAR` (`0x1A`) payload:
 
-Payload layout:
+```text
+u16 object_id, u16 x, u16 y, u16 w, u16 h,
+u16 fg, u16 bg, u16 value, u8 direction
+```
 
-- `u16 object_id`
-- `u16 x1`
-- `u16 y1`
-- `u16 x2`
-- `u16 y2`
-- `u16 fg`
-- `u16 bg`
-- `u8 thickness`
+`UPDATE_BAR` (`0x1B`) payload:
 
-### `UPDATE_LINE` (`0x17`)
+```text
+u16 object_id, u16 value
+```
 
-Payload layout:
+### Ring
 
-- `u16 object_id`
-- `u16 fg`
-- `u16 bg`
+`CREATE_RING` (`0x1C`) payload:
 
-### `CREATE_BAR` (`0x1A`)
+```text
+u16 object_id, u16 cx, u16 cy, u16 radius, u16 inner_radius,
+u16 opening_angle_deg, u16 bg, u16 fg_active, u16 fg_inactive,
+u16 value
+```
 
-Payload layout:
+`UPDATE_RING` (`0x1D`) payload:
 
-- `u16 object_id`
-- `u16 x`
-- `u16 y`
-- `u16 w`
-- `u16 h`
-- `u16 fg`
-- `u16 bg`
-- `u16 value`
-- `u8 direction`
+```text
+u16 object_id, u16 value
+```
 
-### `UPDATE_BAR` (`0x1B`)
+`value` is a `u16` fraction of the visible sweep. Filling starts at the
+lower apex and proceeds clockwise. A non-zero opening is symmetric around the
+lower apex. `inner_radius = 0` produces a filled disk.
 
-Payload layout:
+### Waveform
 
-- `u16 object_id`
-- `u16 value`
+`CREATE_WAVEFORM` (`0x18`) payload:
 
-Current server behavior:
+```text
+u16 object_id, u16 x, u16 y, u16 w, u16 h,
+u16 border, u16 bg, u8 flags, u8 wave_count,
+wave_count × u16 wave_color
+```
 
-- if geometry, colors and direction are unchanged, the server may update only the changed bar delta
+`UPDATE_WAVEFORM` (`0x19`) begins with `u16 object_id, u8 mode`.
 
-### `CREATE_RING` (`0x1C`)
+For `FULL_REPLACEMENT` (`0x01`): `u8 wave_index, u8 sample_count`, followed
+by `sample_count × u16 sample`.
 
-Payload layout:
+For `SHIFTING` (`0x02`): `u8 wave_index, u16 x_advance, u16 sample`.
 
-- `u16 object_id`
-- `u16 cx`
-- `u16 cy`
-- `u16 radius`
-- `u16 inner_radius`
-- `u16 opening_angle_deg`
-- `u16 bg`
-- `u16 fg_active`
-- `u16 fg_inactive`
-- `u16 value`
+For `SHIFTING_MULTI` (`0x03`): `u8 wave_count, u16 x_advance`, followed by
+`wave_count` repetitions of `u8 wave_index, u16 sample`.
 
-### `UPDATE_RING` (`0x1D`)
+## Flags and enumerations
 
-Payload layout:
+- `TEXT_FLAG_BG_TRANSPARENT = 0x03`: do not fill the text bounds.
+- `RECT_FLAG_FILL_TRANSPARENT = 0x01`: ignore the fill colour.
+- `RECT_FLAG_BORDER_ENABLED = 0x02`: draw a one-pixel inner border.
+- `WAVEFORM_FLAG_BORDER_ENABLED = 0x01`: draw a one-pixel border.
 
-- `u16 object_id`
-- `u16 value`
+Bar directions are `TOP_TO_BOTTOM = 0x00`, `BOTTOM_TO_TOP = 0x01`,
+`LEFT_TO_RIGHT = 0x02` and `RIGHT_TO_LEFT = 0x03`.
 
-Current server behavior:
+Colours are RGB565. A public implementation may expose helpers such as
+`guiwire_rgb565(255, 0, 0)`; the wire representation remains a `u16`.
 
-- if geometry and colors are unchanged, the server may update only the ring sectors whose classification changed between the old and new value
+## Object and rendering semantics
 
-### `CREATE_WAVEFORM` (`0x18`)
+- Object id `0` is reserved for Host-owned content; Device objects use ids
+  `1..32`.
+- `CREATE_*` is idempotent for an existing matching object.
+- Geometry and layout are established by `CREATE_*` and remain fixed until the
+  object is destroyed.
+- `UPDATE_*` requires the object to exist.
+- Commands are rendered in reception order. A Host may redraw selectively, but
+  the visible result must match the object semantics.
+- For resynchronization, a Device should enqueue `DESTROY_ALL_OBJECTS` followed
+  by its current descriptors and state updates.
 
-Payload layout:
+## Limits
 
-- `u16 object_id`
-- `u16 x`
-- `u16 y`
-- `u16 w`
-- `u16 h`
-- `u16 border`
-- `u16 bg`
-- `u8 flags`
-- `u8 wave_count`
-- `wave_count * u16 wave_color`
+The current profile defines:
 
-### `UPDATE_WAVEFORM` (`0x19`)
+```text
+GUIWIRE_MAX_PACKET_SIZE   = 256   (application bytes, header included)
+GUIWIRE_MAX_TEXT_LEN       = 64
+GUIWIRE_MAX_OBJECTS        = 32
+GUIWIRE_MAX_WAVEFORM_WAVES = 4
+```
 
-Common payload prefix:
-
-- `u16 object_id`
-- `u8 mode`
-
-Mode `GUI2C_WAVEFORM_UPDATE_MODE_FULL_REPLACEMENT` (`0x01`):
-
-- `u8 wave_index`
-- `u8 sample_count`
-- `sample_count * u16 sample`
-
-Mode `GUI2C_WAVEFORM_UPDATE_MODE_SHIFTING` (`0x02`):
-
-- `u8 wave_index`
-- `u16 x_advance`
-- `u16 sample`
-
-Mode `GUI2C_WAVEFORM_UPDATE_MODE_SHIFTING_MULTI` (`0x03`):
-
-- `u8 wave_count`
-- `u16 x_advance`
-- repeated `wave_count` times:
-  - `u8 wave_index`
-  - `u16 sample`
-
-Current server behavior:
-
-- `CREATE_TEXT`, `CREATE_RECT`, `CREATE_LINE`, `CREATE_BAR`, `CREATE_RING` and `CREATE_WAVEFORM` are idempotent
-- resending a matching `CREATE_*` for an already existing object returns `OK` and leaves the object unchanged
-- geometry and layout are currently defined by `CREATE_*` and remain fixed afterwards
-- `UPDATE_TEXT` requires that the text object already exists
-- `UPDATE_RECT` requires that the rect object already exists
-- `UPDATE_LINE` requires that the line object already exists
-- `UPDATE_BAR` requires that the bar object already exists, because the update payload contains only `object_id` and `value`
-- `UPDATE_RING` requires that the ring object already exists, because the update payload contains only `object_id` and `value`
-- `UPDATE_WAVEFORM` requires that the waveform object already exists, because the update payload does not contain geometry, border or color configuration
-
-## Colors
-
-Colors use `gui2c_color_t`, currently RGB565 in public descriptors and payloads.
-
-Examples:
-
-- `gui2c_rgb565(255, 0, 0)` = red
-- `gui2c_rgb565(0, 255, 0)` = green
-- `gui2c_rgb565(0, 0, 255)` = blue
-
-## Text flags
-
-### `GUI2C_TEXT_FLAG_BG_TRANSPARENT`
-
-When set, the text background is not filled before glyph rendering.
-
-When clear, the text object's `bg` color is used to fill its bounding box.
-
-Recommended value:
-
-- `0x03`
-
-## Rect flags
-
-### `GUI2C_RECT_FLAG_FILL_TRANSPARENT`
-
-Value:
-
-- `0x01`
-
-When set, the fill color is ignored and only the border may be drawn.
-
-### `GUI2C_RECT_FLAG_BORDER_ENABLED`
-
-Value:
-
-- `0x02`
-
-When set, a 1-pixel border is drawn inside the rectangle bounds.
-
-## Bar directions
-
-### `GUI2C_BAR_DIRECTION_TOP_TO_BOTTOM`
-
-Value:
-
-- `0x00`
-
-### `GUI2C_BAR_DIRECTION_BOTTOM_TO_TOP`
-
-Value:
-
-- `0x01`
-
-### `GUI2C_BAR_DIRECTION_LEFT_TO_RIGHT`
-
-Value:
-
-- `0x02`
-
-### `GUI2C_BAR_DIRECTION_RIGHT_TO_LEFT`
-
-Value:
-
-- `0x03`
-
-## Ring semantics
-
-- `value` is interpreted as a `u16` fraction of the visible sweep
-- filling starts at the lower apex of the circle and proceeds clockwise
-- if `opening_angle_deg` is non-zero, that angle is left open symmetrically around the lower apex
-- with an opening, filling begins at the left edge of the gap and proceeds clockwise over the remaining visible sweep
-- `inner_radius = 0` produces a filled disk; larger values produce a ring
-
-## Waveform flags
-
-### `GUI2C_WAVEFORM_FLAG_BORDER_ENABLED`
-
-Value:
-
-- `0x01`
-
-When set, a 1-pixel border is drawn around the widget.
-
-## Waveform update modes
-
-### `GUI2C_WAVEFORM_UPDATE_MODE_FULL_REPLACEMENT`
-
-Value:
-
-- `0x01`
-
-The server replaces the stored samples for one wave, rescales over all currently stored waveform values in the widget and redraws. The exact redraw strategy is target-specific.
-
-### `GUI2C_WAVEFORM_UPDATE_MODE_SHIFTING`
-
-Value:
-
-- `0x02`
-
-The server advances stored samples for one wave by `x_advance`, drops values that moved out of view, appends the new sample at the right edge and redraws the widget. The exact redraw strategy is target-specific.
-
-### `GUI2C_WAVEFORM_UPDATE_MODE_SHIFTING_MULTI`
-
-Value:
-
-- `0x03`
-
-The server advances the stored history of multiple waves by the same `x_advance` and appends one new sample per referenced `wave_index` in a single packet. This reduces command overhead when several curves advance together.
-
-## Rendering semantics
-
-Commands are processed strictly in reception order.
-
-In the current implementation, rendering is synchronous:
-
-- one packet is received
-- one command is fully executed
-- visible changes are rendered and flushed
-- only then is the next packet processed
-
-This makes behavior simple and predictable, but also means that many small updates can be visually slower than one coarse update.
-
-Line updates currently use this sequence:
-
-- redraw the previous line using its stored `bg` color
-- draw the new line using its `fg` color
-- flush
-
-Other object types may use more selective redraw strategies internally. For example, bars, rings and waveform widgets may update only the changed regions as long as the visible result still matches the public object semantics.
-
-## Object ownership
-
-Rules:
-
-- object id `0` is reserved for the server
-- client objects should use ids `>= 1`
-- `DESTROY_ALL_OBJECTS` removes only client-owned objects
-
-## Packet size limits
-
-Current public limits include:
-
-- `GUI2C_MAX_PACKET_SIZE = 256`
-- `GUI2C_MAX_TEXT_LEN = 64`
-- `GUI2C_MAX_OBJECTS = 32`
-- `GUI2C_MAX_WAVEFORM_WAVES = 4`
-
-These limits are compile-time constants from the public protocol header.
-
-Waveform storage depth and the maximum number of waveform objects are intentionally not part of the public protocol contract. Those limits are server-internal and may vary by selected server target profile.
-
-The same applies to server-internal rendering strategies such as column-wise waveform rendering, indexed caches or partial redraw acceleration paths.
-
-## Notes for client authors
-
-- keep object ids stable across updates
-- prefer `UPDATE_*` over repeated destroy/create when the object is conceptually the same
-- it is safe to resend `CREATE_*` during a resync phase because create is idempotent on the current server
-- keep waveform create descriptors around on the client side because `UPDATE_WAVEFORM` cannot reconstruct a missing widget by itself
-- keep text within `GUI2C_MAX_TEXT_LEN`
-- for large animations, prefer changing only what really changed
+Waveform history depth and renderer caches are Host-internal limits. They are
+not part of wire compatibility.

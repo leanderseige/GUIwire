@@ -1,0 +1,28 @@
+/* SPDX-License-Identifier: MIT */
+
+#ifndef GUIWIRE_SERVER_SSD1306_BOARD_CONFIG_H
+#define GUIWIRE_SERVER_SSD1306_BOARD_CONFIG_H
+
+#define GUIWIRE_UART_PORT uart0
+#define GUIWIRE_PIN_GUIWIRE_TX 0u
+#define GUIWIRE_PIN_GUIWIRE_RX 1u
+#include "guiwire/guiwire_pico_uart_pinmap.h"
+#if !GUIWIRE_PICO_UART0_PINS_VALID(GUIWIRE_PIN_GUIWIRE_TX, GUIWIRE_PIN_GUIWIRE_RX)
+#error "RP2040 UART0 TX/RX pins are not a valid hardware pair"
+#endif
+
+#define GUIWIRE_SPI_PORT spi0
+#define GUIWIRE_SPI_BAUDRATE 8000000u
+#define GUIWIRE_PIN_OLED_MOSI 3u
+#define GUIWIRE_PIN_OLED_SCK  2u
+#define GUIWIRE_PIN_OLED_CS   5
+#define GUIWIRE_PIN_OLED_DC   6
+#define GUIWIRE_PIN_OLED_RST  7
+#define GUIWIRE_PIN_OLED_BL   (-1)
+
+#define GUIWIRE_SSD1306_WIDTH 128u
+#ifndef GUIWIRE_SSD1306_HEIGHT
+#define GUIWIRE_SSD1306_HEIGHT 64u
+#endif
+
+#endif

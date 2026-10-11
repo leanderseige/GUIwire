@@ -3,87 +3,141 @@ SPDX-License-Identifier: MIT
 Authors: any:frequency, seige.digital GbR, Leander Seige (2026)
 -->
 
-# GUI2C Architecture
+# GUIwire Architecture
 
-## Repositories
+## Specification boundary
 
-GUI2C is split into four repositories:
+[`GUIwire.md`](../GUIwire.md) is the authoritative document. This file
+explains how an implementation should be split; it does not introduce a
+second wire format.
 
-- `gui2c`: protocol specification and documentation
-- `gui2c_client_library_rp2350_rp2040`: Pico-SDK C library for GUI2C clients
-- `gui2c_server_ili9488`: ILI9488 display server firmware and renderer stack
-- `gui2c_demo_client`: example Pico client firmware using the client library
+The repository contains the protocol definition and a portable C reference
+library. Its public packet structures are derived from the specification rather
+than defining private extensions as if they were standard GUIwire.
 
-The specification repository is the source of truth for the wire protocol. C
-headers in the implementation repositories should remain derived from this
-specification.
+The library is split into two reusable runtimes:
+
+- `guiwire_host`: discovery, polling, timeout handling, hot-patch recovery,
+  object ownership, generic rendering and link-rate negotiation
+- `guiwire_device_runtime`: PING/POLL handling, response scheduling, queue
+  delivery, link-rate negotiation and Device session expiry
+
+The lower-level `guiwire_core` and `guiwire_device` targets can also be used
+directly when an application needs a custom scheduler.
 
 ## Roles
 
-GUI2C uses these application-level roles:
+GUIwire has two application roles:
 
-- Display server: owns the physical display and renders GUI objects.
-- Client: owns the content and sends drawing/object commands.
+- **Host**: provides the display and optional controls. It schedules traffic,
+  renders GUI objects and owns the connected user-interface session.
+- **Device**: is the functional module. It owns the functional state and sends
+  the interface objects and state changes that the Host should present.
 
-On the current I2C transport, the bus roles are:
+The Host is the link scheduler. The Device only transmits after a Host frame
+has granted it a response opportunity. This makes a single shared conductor
+deterministic and avoids collisions without a network arbitration scheme.
 
-- Client is the I2C controller.
-- Display server is the I2C target.
+## Single connection
 
-This avoids multi-controller I2C on a Eurorack bus and keeps the first hardware
-version predictable.
-
-## Single-View Mode
-
-The first implementation targets one client and one display server:
+The initial profile supports exactly one Host and one Device:
 
 ```text
-Eurorack module MCU  ->  GUI2C display MCU  ->  ILI9488
-GUI2C client             GUI2C server
-I2C controller           I2C target
+┌──────────────┐       TS patch cable       ┌──────────────┐
+│ Device       │ DATA + GND, half duplex    │ Host         │
+│ functional   │◄─────────────────────────►│ display/UI   │
+└──────────────┘                            └──────────────┘
 ```
 
-The client normally owns the full advertised display area.
+The cable carries data only. Both modules have their own power supply and
+local MCU logic voltage. A display controller may use any local display bus;
+that bus is not part of GUIwire.
 
-## Multi-View Roadmap
+## Session sequence
 
-A future multi-view display should avoid multiple controllers on one I2C bus.
-The preferred hardware direction is multiple independent I2C ports:
+After connection or a timeout, the Host discards its partial receive frame and
+starts discovery with `PING`:
 
 ```text
-Client A / controller  ->  Port A  \
-Client B / controller  ->  Port B   -> Display MCU -> physical display
-Client C / controller  ->  Port C  /
+Host                                      Device
+
+PING request ───────────────────────────────►
+             ◄────────────────────────────── PING response
+GET_LINK_INFO ──────────────────────────────►
+             ◄──────── LINK_INFO (common rates)
+SET_BAUD ───────────────────────────────────►
+             ◄──────── BAUD_ACK, then both switch rates
+POLL ───────────────────────────────────────►
+             ◄──────── HELLO_STRING / GUI object / NO_DATA
+POLL ───────────────────────────────────────►
+             ◄──────── next queued GUI command
 ```
 
-Each port remains a normal one-controller I2C bus. The display server maps each
-physical port to one or more virtual views.
+The Device queues its current interface and subsequent state changes. One
+`POLL` obtains at most one application packet. A Host repeats `POLL` until
+it receives `NO_DATA`; it may then poll again when it expects a state change.
 
-Jumper or DIP-switch configuration can select modes such as:
+The rate exchange is optional for compatibility. Both endpoints begin at the
+9600-baud startup rate; a legacy Device that does not answer `GET_LINK_INFO`
+is simply used at that rate. A failed switch is recovered by the Device's
+fallback timer and the Host's base-rate retry.
 
-- single full-screen view
-- dual horizontal split
-- dual vertical split
-- quad split
-- diagnostic/test mode
-- I2C address, rotation or brightness defaults
+This schedule preserves the object command profile while keeping line
+ownership explicit. A Device must not start a transmission spontaneously.
 
-Clients should not need to know the global physical placement. They query the
-server capabilities on their link and draw into the local coordinate space of
-their assigned view.
+## Hot-patch handover
 
-## Protocol Roadmap
+The cable has no presence signal. The Host detects removal through missed
+responses and, after three missed responses or 500 ms, clears the old Device
+scene and enters discovery. The previous Device expires its session after at
+least 300 ms without a Host frame and drops its pending transmit queue.
 
-The current command set is object-oriented and immediate. The next protocol
-revision should add:
+The newly connected Device answers `PING` and begins its first response queue
+with `DESTROY_ALL_OBJECTS`, then sends its identity, descriptors and current
+state. The Host does not render object packets before that reset command and
+polls until `NO_DATA`. Thus the Host, the previous Device and the new Device
+all reach a defined state when one cable is moved.
 
-- capability discovery
-- virtual display/view descriptors
-- view reservation
-- session IDs
-- timeout and release semantics
-- explicit reset behavior
-- optional present/update batching
+## Layering
 
-These features should be specified in `docs/protocol.md` before implementation
-headers are changed.
+Implementations should keep these layers separate:
+
+1. **Physical layer**: 3.5 mm TS connection, protected single-wire
+   open-collector-style signaling and local TX/RX conversion.
+2. **Link layer**: asynchronous byte transport, escaping, frame length,
+   CRC-16, turnaround and recovery.
+3. **Application layer**: packet header, commands, object ownership and
+   rendering semantics.
+
+The Host's display technology, font renderer and local graphics API are
+implementation details. They must not change the bytes sent by a Device.
+
+## Porting boundary
+
+The portable library deliberately stops at callbacks. A manufacturer supplies
+the following implementation-specific pieces:
+
+```text
+GUIwire library
+  ├── protocol, CRC, framing and escaping
+  ├── Host/Device sessions and hot-patching
+  ├── object serialization and generic object rendering
+  └── compile-time bounded queues and scene storage
+
+manufacturer port
+  ├── write one byte / release the half-duplex line
+  ├── receive bytes and provide a millisecond clock to *_feed_byte/*_tick
+  ├── render fill_rect / draw_pixel / flush
+  └── implement functional module state
+```
+
+The reference RP2040 transport is isolated in `firmware/ports/pico`; it is
+not included by the portable `firmware/common` CMake target. This keeps the
+same library usable from AVR-GCC, Pico SDK, bare-metal projects or an RTOS.
+
+## Future work
+
+Reserved areas include richer capability discovery, semantic widgets,
+interaction events and batching/present operations.
+Such additions must preserve the one-Host/one-Device schedule and must be
+assigned new versioned commands or capability bits.
