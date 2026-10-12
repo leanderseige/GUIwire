@@ -28,6 +28,7 @@ target_link_libraries(guiwire_server_st7789_pico PRIVATE
     guiwire_display_st7789
     guiwire_platform_pico
     pico_multicore
+    pico_rand
     pico_stdlib
     hardware_spi
     hardware_uart

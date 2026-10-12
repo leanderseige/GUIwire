@@ -6,8 +6,8 @@
  * device response is delivered back only after the device has finished its
  * frame. There is no local echo in this model; local echo is a transceiver
  * concern and must not enter either protocol parser.
- * Compile this test with GUIWIRE_DEVICE_QUEUE_CAPACITY=10 and
- * GUIWIRE_MAX_PACKET_SIZE=96, matching the ATmega demonstrator.
+ * Compile this test with GUIWIRE_DEVICE_QUEUE_CAPACITY=9 and
+ * GUIWIRE_MAX_PACKET_SIZE=98, matching the ATmega demonstrator.
  */
 
 #include <stdio.h>

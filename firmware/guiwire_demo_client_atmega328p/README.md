@@ -50,7 +50,30 @@ make -C firmware/guiwire_demo_client_atmega328p size
 The demonstrator uses a fixed 9600-baud GUIwire link by default. The Host and
 client must be built with the same `BAUD` value. Automatic baud negotiation
 can be enabled explicitly with `NEGOTIATE=1` on the client and the matching
-option on the Host.
+option on the Host. Both builds use session-tagged replies and retain each
+GUI packet until the Host acknowledges it. If a cable is patched after both
+boards are already running, the Host discovers the client with a new `PING`.
+The AVR build uses a nine-entry queue and 98-byte maximum application packet;
+that exactly fits a 64-byte `CREATE_TEXT` inside the session envelope. Its
+initial snapshot fills all nine slots before normal updates begin.
+
+To preserve the fixed-rate image and build the adaptive version separately:
+
+```sh
+make -B -C firmware/guiwire_demo_client_atmega328p \
+  BUILD_DIR=build-adaptive BAUD=9600 NEGOTIATE=1 all size
+```
+
+This produces
+`firmware/guiwire_demo_client_atmega328p/build-adaptive/guiwire_demo_client_atmega328p.hex`.
+Pair it with the adaptive Host build described in the
+[server README](../guiwire_server_rp2040/README.md). The client starts at
+9600 and advertises 19200, 38400 and 57600 baud; it changes rate only after
+sending `BAUD_ACK` at the old rate. If a faster link falls silent, it returns
+to 9600 without discarding its pending display updates. ADC0/ADC1 conversions
+run in the background, with the first sample after each channel change
+discarded. UART reception is interrupt-buffered, so reading the potentiometers
+does not block reception of a Host request.
 
 The default output is:
 
@@ -76,6 +99,15 @@ by your operating system:
 
 ```sh
 make -C firmware/guiwire_demo_client_atmega328p flash \
+  PROGRAMMER=arduino PORT=/dev/cu.wchusbserialXXXX
+```
+
+To flash the adaptive image, specify its build directory and build options so
+`make` cannot accidentally select the fixed image:
+
+```sh
+make -B -C firmware/guiwire_demo_client_atmega328p flash \
+  BUILD_DIR=build-adaptive BAUD=9600 NEGOTIATE=1 \
   PROGRAMMER=arduino PORT=/dev/cu.wchusbserialXXXX
 ```
 

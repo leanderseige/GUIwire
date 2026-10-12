@@ -91,6 +91,7 @@ guiwire_status_t guiwire_server_reset_scene(guiwire_server_t *server) {
     guiwire_status_t st;
     if (!server) return GUIWIRE_STATUS_ERR_INVALID_ARGUMENT;
     guiwire_server_clear_all_objects(server);
+    server->last_client_string[0] = '\0';
     st = guiwire_server_fill_bg(server, 0u, 0u,
                                 server->cfg.display_size.width,
                                 server->cfg.display_size.height,

@@ -14,7 +14,7 @@ stated otherwise and are encoded little-endian.
 The standard transport is an asynchronous byte stream over one shared DATA
 conductor and GND. The mandatory startup rate is **9600 baud, 8 data bits, no
 parity, one stop bit (8N1)**. Optional rates are negotiated at the application
-layer after `PING`; the reference profiles use 38400 and 57600 baud. The
+layer after `PING`; the demonstrator tests 19200, 38400 and 57600 baud. The
 transceiver may invert the signal internally; the application bytes are not
 inverted.
 
@@ -67,18 +67,22 @@ ignored after the frame has been validated.
 ## Turnaround and scheduling
 
 The Host sends a request and then releases the line. The Device may send one
-response frame after the turnaround interval. `PING` receives a `PING`
-response; `POLL` receives exactly one queued Device packet, or `NO_DATA`.
+response frame after the turnaround interval. In a reliable session, `PING`
+receives a token-echoing `PING` response; `POLL` receives one `SESSION_DATA`
+or `SESSION_EMPTY` frame. The older empty-payload request/reply form remains
+parsable for compatibility but cannot guarantee client-switch detection.
 
 The Host must not start another frame until the Device has released the line
-or the response timeout has elapsed. At 9600 baud, implementations should
-allow at least 50 ms for a maximum-size response, including processing time.
-The timeout must be increased if a lower baud rate is selected.
+or the response timeout has elapsed. The timeout must cover the longest
+accepted frame, including worst-case byte stuffing and turnaround. With a
+256-byte packet limit at 9600 baud, the serialized response alone can take
+about 543 ms; the reference Host allows at least another 75 ms of margin.
 
 On disconnect, reset or timeout, both sides discard partial frames. The Device
-may rebuild its queued interface from its current state; after such a
-reconnection event, the Host should treat the next `PING` response as a new
-session and clear all cached objects.
+rebuilds its queued interface from its current state after a new `PING`.
+The Host treats a fresh, matching `PING` response as a new session and clears
+all cached objects. A baud-rate recovery in the *same* session does not clear
+the cache.
 
 ## Hot-patch session lifecycle
 
@@ -86,16 +90,35 @@ The TS cable has no presence conductor. An unplugged DATA line is
 indistinguishable from an idle line, so presence is established by valid
 request/response traffic.
 
-While connected, the Host should send `POLL` at least every 100 ms. It
-declares the session lost after three consecutive response timeouts or 500 ms
-without a valid response. At that point it must stop interaction traffic,
-discard partial input, clear all Device-owned objects and restart discovery
-with `PING`. The display should show a neutral no-device state while
-discovery is pending.
+While connected, the Host should send `POLL` at least every 100 ms. At the
+startup rate, it declares the session lost after three consecutive response
+timeouts or its configured session timeout without a valid response. The
+reference Host uses 1500 ms at the base rate. It then stops interaction
+traffic, discards partial input, clears all Device-owned objects and restarts
+discovery with `PING`. The display should show a neutral
+no-device state while discovery is pending. At a negotiated higher rate, it
+first attempts the silent base-rate recovery described below, because a rate
+failure alone does not prove that the Device was unplugged.
 
-The Device expires its session after at least 300 ms without a valid Host
-frame. It stops transmitting, discards its pending GUI queue and marks the
+The Device expires its session after its configured timeout without an
+authenticated Host frame. It stops transmitting, discards its pending GUI
+queue and marks the
 session inactive. The Device's functional state is not reset by this timeout.
+When rate fallback is enabled, the session timeout must exceed the negotiated
+silent fallback interval plus the Host's recovery margin; the reference
+adaptive Device uses 2500 ms. The fixed-rate demonstrator uses 1500 ms so a
+local debug redraw does not normally invalidate the session.
+
+Every reliable session uses a fresh eight-byte Host-generated token. The Host
+places it in `PING`; the Device echoes it. Subsequent `POLL`,
+`GET_LINK_INFO`, and `SET_BAUD` requests carry that token. The Device does not
+execute requests for another session. Instead it returns `SESSION_MISMATCH`
+with the token from the rejected request. On a matching mismatch response,
+the Host discards the old scene and starts a new `PING`. A client swap at the
+same baud is therefore recognized even if the new client is already running
+and responding. If the baud differs, the Host first performs base-rate
+recovery and then verifies the session token. A Host requiring this guarantee
+must reject legacy empty-payload `PING` replies.
 
 After a new `PING` response, the new Device must queue the following initial
 sequence:
@@ -106,25 +129,33 @@ sequence:
 4. current `UPDATE_*` state packets, where required
 
 The Host must not render Device-owned object packets until it has received the
-initial `DESTROY_ALL_OBJECTS`. It then polls until `NO_DATA` and renders the
-new complete scene. This ordering makes a cable move from Device A to Device B
+initial `DESTROY_ALL_OBJECTS`. It renders each subsequent object command as
+it is received; `SESSION_EMPTY` means the initial scene is complete. This
+ordering makes a cable move from Device A to Device B
 safe even when Device A was interrupted in the middle of a frame.
 
 The cable itself has no state machine; the Host, the previous Device and the
-new Device perform the handover through timeout, discovery and resynchronization.
+new Device perform the handover through token mismatch or timeout, discovery
+and resynchronization. While a local debug view is shown, the Host continues
+to apply confirmed GUI updates to its cached object model without drawing
+them. On release it redraws that model locally, without requesting a new
+Device snapshot. A true disconnect or client switch invalidates the cache.
 
 ## Command registry
 
 | Command | Value | Direction | Payload |
 |---|---:|---|---|
-| `PING` | `0x01` | Host ↔ Device | none |
+| `PING` | `0x01` | Host ↔ Device | 8-byte session token (legacy: none) |
 | `HELLO_STRING` | `0x02` | Device → Host | raw UTF-8 bytes |
-| `POLL` | `0x03` | Host → Device | none |
-| `NO_DATA` | `0x04` | Device → Host | none |
-| `GET_LINK_INFO` | `0x05` | Host → Device | none |
-| `LINK_INFO` | `0x06` | Device → Host | `u8 count`, then `count × u32 baud` |
-| `SET_BAUD` | `0x07` | Host → Device | `u32 baud`, `u8 token` |
-| `BAUD_ACK` | `0x08` | Device → Host | `u32 baud`, `u8 token` |
+| `POLL` | `0x03` | Host → Device | session token, `u16 ACK` (legacy: none) |
+| `NO_DATA` | `0x04` | Device → Host | none; legacy only |
+| `GET_LINK_INFO` | `0x05` | Host → Device | session token (legacy: none) |
+| `LINK_INFO` | `0x06` | Device → Host | session token, `u8 count`, then `count × u32 baud` |
+| `SET_BAUD` | `0x07` | Host → Device | session token, `u32 baud`, `u8 rate_token` |
+| `BAUD_ACK` | `0x08` | Device → Host | session token, `u32 baud`, `u8 rate_token` |
+| `SESSION_DATA` | `0x09` | Device → Host | session token, `u16 seq`, `u8 inner_command`, inner payload |
+| `SESSION_EMPTY` | `0x0A` | Device → Host | session token |
+| `SESSION_MISMATCH` | `0x0B` | Device → Host | rejected request's session token |
 | `DESTROY_ALL_OBJECTS` | `0x10` | Device → Host | none |
 | `CREATE_TEXT` | `0x11` | Device → Host | text descriptor |
 | `UPDATE_TEXT` | `0x12` | Device → Host | text state |
@@ -141,44 +172,85 @@ new Device perform the handover through timeout, discovery and resynchronization
 | `UPDATE_RING` | `0x1D` | Device → Host | ring state |
 
 The Device queues packets in order. A Host executes only complete, CRC-valid
-packets. The object commands are deliberately retained as an immediate-mode
+packets bound to the active session. The object commands are deliberately
+retained as an immediate-mode
 rendering profile; a future semantic widget profile will use new commands.
 
 ### `PING` (`0x01`)
 
-Payload: none. A peer replies with a `PING` packet containing no payload.
+In reliable mode the Host generates an unpredictable eight-byte token for
+every new attempt and the Device echoes the exact eight bytes. This establishes
+the session identity. The legacy form has an empty payload in both directions.
 
 ### `HELLO_STRING` (`0x02`)
 
 Payload: raw UTF-8 bytes without a terminating NUL. This is a diagnostic
 identity string, not a required manufacturer/product registry.
 
-### `POLL` (`0x03`) and `NO_DATA` (`0x04`)
+### Reliable `POLL` and responses (`0x03`, `0x09`..`0x0B`)
 
-Both payloads are empty. `POLL` grants the Device one response opportunity.
-The Device returns the next queued packet or `NO_DATA` if its queue is empty.
+In reliable mode `POLL` carries `token[8], u16 ACK`. The first ACK is
+`0xFFFF` (none yet). A `SESSION_DATA` response carries
+`token[8], u16 seq, u8 inner_command, inner_payload`. The first sequence is
+zero. The Host checks the token and executes a new sequence at most once,
+then puts that sequence into its next `POLL` as the ACK. Until the Device sees
+that ACK it keeps the queue head and retransmits it on every valid `POLL`.
+Upon ACK, it removes the head and advances the sequence. Sequence `0xFFFF`
+is skipped, so it remains an unambiguous no-ACK sentinel. A duplicate
+sequence does not execute the enclosed command again. An unexpected sequence
+or invalid inner command forces a fresh session, not a silent queue advance.
+If no object is queued the Device responds `SESSION_EMPTY` with `token[8]`.
+The first object of a new session must be `DESTROY_ALL_OBJECTS`; an empty
+initial snapshot is a protocol error and triggers rediscovery.
+
+The envelope adds 11 bytes to an object packet. A Device must limit an
+enclosed object packet to `MAX_PACKET_SIZE - 11`; the ATmega demonstrator uses
+`MAX_PACKET_SIZE=98` and a nine-entry queue. This exactly fits a 64-byte
+`CREATE_TEXT` in the session envelope. The Host may use a larger frame
+limit. The older `POLL`/`NO_DATA` exchange has empty payloads and no ACK.
 
 ### Link-rate negotiation (`0x05`..`0x08`)
 
-`GET_LINK_INFO` has an empty payload. The Device answers with `LINK_INFO`:
+`GET_LINK_INFO` carries the current session token. The Device answers with
+`LINK_INFO`:
 
 ```text
-u8 count, u32 baud[count]
+token[8], u8 count, u32 baud[count]
 ```
 
 The baud values are little-endian and `count` must be between 1 and 8.
 `SET_BAUD` is sent at the current rate:
 
 ```text
-u32 baud, u8 token
+token[8], u32 baud, u8 rate_token
 ```
 
 The Device sends `BAUD_ACK` with the same values at the current rate and only
 then changes its UART configuration. The Host changes its UART after receiving
-and validating that acknowledgement. The token is nonzero and lets each side
-discard stale acknowledgements after a cable move or timeout. A failed or
-unsupported selection is not acknowledged. Both sides must retain a fallback
+and validating that acknowledgement. The one-byte rate token is nonzero and
+lets each side discard stale rate acknowledgements. The eight-byte session
+token independently prevents another client from accepting a stale Host
+request. A failed or unsupported selection is not acknowledged. Both sides must retain a fallback
 to the 9600-baud startup rate.
+
+The reference Host exchanges ordinary GUI `POLL`/response frames during rate
+discovery and between tests. After its initial scene is present it attempts
+the next higher *common* rate, rather than jumping immediately to the fastest
+advertised rate. A step is confirmed by three consecutive valid `POLL`
+responses at that rate. Another step is not attempted for 5 seconds. A valid
+link that degrades may step down one common rate via the same handshake.
+There are no concurrent UART rates: each test occupies an exclusive
+half-duplex turn.
+
+The adaptive Device returns to 9600 baud after 400 ms without a valid Host
+frame at a higher rate, retaining its GUI queue. After a lost `BAUD_ACK` or
+two unanswered high-rate polls, the reference Host stays silent for 450 ms,
+then uses 9600 baud and verifies it with `POLL`. A failed or downshifted rate
+is not tried again for 30 seconds. The Host retains the rendered GUI through
+these rate trials; if base-rate verification also fails, normal hot-patch
+session loss and discovery apply. Implementations using different timeout
+values must ensure the Device stays in session until the Host can verify the
+base rate.
 
 ### `DESTROY_ALL_OBJECTS` (`0x10`)
 

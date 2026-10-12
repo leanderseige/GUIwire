@@ -52,6 +52,10 @@ typedef struct {
     uint32_t current_baud;
     uint32_t baud_fallback_deadline_ms;
     bool baud_fallback_active;
+    bool reliable_session;
+    bool inflight;
+    uint8_t session_token[GUIWIRE_SESSION_TOKEN_SIZE];
+    uint16_t next_sequence;
 } guiwire_device_runtime_t;
 
 guiwire_status_t guiwire_device_runtime_init(guiwire_device_runtime_t *runtime,

@@ -38,14 +38,20 @@ void guiwire_device_clear_queue(guiwire_device_t *device);
 void guiwire_device_set_session(guiwire_device_t *device, bool active);
 bool guiwire_device_session_active(const guiwire_device_t *device);
 
+/* Queued application packets must fit in a SESSION_DATA envelope. */
 guiwire_status_t guiwire_device_queue_command(guiwire_device_t *device,
                                               guiwire_command_t command,
                                               const uint8_t *payload,
                                               uint16_t payload_len);
 
 bool guiwire_device_pop(guiwire_device_t *device, uint8_t *packet, size_t capacity, size_t *out_len);
+/* Peek does not consume the packet; used until the Host acknowledges it. */
+bool guiwire_device_peek(const guiwire_device_t *device, const uint8_t **packet, size_t *out_len);
+bool guiwire_device_commit(guiwire_device_t *device);
 size_t guiwire_device_pending(const guiwire_device_t *device);
 
+/* queue_ping is retained for legacy callers; the runtime handles session
+ * PING replies directly and it is not a GUI update. */
 guiwire_status_t guiwire_device_queue_ping(guiwire_device_t *device);
 guiwire_status_t guiwire_device_queue_hello(guiwire_device_t *device, const char *text);
 guiwire_status_t guiwire_device_destroy_all_objects(guiwire_device_t *device);

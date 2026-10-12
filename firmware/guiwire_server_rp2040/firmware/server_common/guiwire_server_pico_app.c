@@ -2,6 +2,7 @@
 
 #include "pico/stdlib.h"
 #include "pico/multicore.h"
+#include "pico/rand.h"
 #include "hardware/gpio.h"
 #include "hardware/sync.h"
 #include <inttypes.h>
@@ -23,7 +24,7 @@
 
 #if GUIWIRE_ENABLE_BAUD_NEGOTIATION
 static const uint32_t gui_wire_supported_bauds[] = {
-    9600u, 38400u, 57600u
+    9600u, 19200u, 38400u, 57600u
 };
 #endif
 
@@ -156,6 +157,17 @@ static const char *debug_waiting_state(const guiwire_host_t *host) {
     return "DISCOVERY";
 }
 
+static const char *debug_rate_state(const guiwire_host_t *host) {
+    switch (host->rate_stage) {
+        case GUIWIRE_RATE_DISCOVER: return "DISCOVER";
+        case GUIWIRE_RATE_READY: return "READY";
+        case GUIWIRE_RATE_TRIAL: return "TRIAL";
+        case GUIWIRE_RATE_RECOVER: return "RECOVER";
+        case GUIWIRE_RATE_VERIFY_BASE: return "VERIFY BASE";
+        default: return "FIXED";
+    }
+}
+
 static void debug_draw_line(guiwire_server_t *server, uint16_t y, const char *text,
                             guiwire_color_t color) {
     const guiwire_renderer_vtable_t *renderer = server->cfg.renderer;
@@ -194,8 +206,13 @@ static void debug_redraw(guiwire_host_t *host, const guiwire_pico_uart_t *uart,
                                      guiwire_rgb565(0u, 0u, 0u));
         *initialized = true;
     }
-    /* Distinguish the corrected UART0 pin mapping from older firmware. */
+    /* The heading makes the adaptive image distinguishable from the known-good
+     * fixed 9600-baud image during an A/B hardware test. */
+#if GUIWIRE_ENABLE_BAUD_NEGOTIATION
+    debug_draw_line(server, 8u, "GUIWIRE ADAPTIVE", guiwire_rgb565(0u, 255u, 0u));
+#else
     debug_draw_line(server, 8u, "GUIWIRE PINFIX 9600", guiwire_rgb565(0u, 255u, 0u));
+#endif
 
     (void)snprintf(line, sizeof(line), "STATE %s", debug_waiting_state(host));
     debug_draw_line(server, 24u, line, guiwire_rgb565(255u, 255u, 255u));
@@ -226,6 +243,12 @@ static void debug_redraw(guiwire_host_t *host, const guiwire_pico_uart_t *uart,
     debug_draw_line(server, 136u, line, guiwire_rgb565(255u, 255u, 0u));
     (void)snprintf(line, sizeof(line), "BAUD %" PRIu32, host->current_baud);
     debug_draw_line(server, 152u, line, guiwire_rgb565(255u, 255u, 0u));
+    (void)snprintf(line, sizeof(line), "RATE %s %u/3", debug_rate_state(host),
+                   host->trial_good_responses);
+    debug_draw_line(server, 168u, line, guiwire_rgb565(255u, 255u, 0u));
+    (void)snprintf(line, sizeof(line), "UP %" PRIu32 " DN %" PRIu32 " FAIL %" PRIu32,
+                   host->rate_upshifts, host->rate_downshifts, host->rate_failures);
+    debug_draw_line(server, 184u, line, guiwire_rgb565(255u, 255u, 0u));
     (void)guiwire_server_flush(server);
     server->cfg.renderer = saved_renderer;
 }
@@ -250,6 +273,20 @@ static void host_tx_complete(void *ctx) {
     service->tx_capture_open = false;
 }
 
+static void host_new_session_token(void *ctx,
+                                   uint8_t token[GUIWIRE_SESSION_TOKEN_SIZE]) {
+    uint64_t value = get_rand_64();
+    (void)ctx;
+    for (uint8_t i = 0u; i < GUIWIRE_SESSION_TOKEN_SIZE; ++i) {
+        token[i] = (uint8_t)(value >> (8u * i));
+    }
+}
+
+static uint32_t host_time_ms(void *ctx) {
+    (void)ctx;
+    return to_ms_since_boot(get_absolute_time());
+}
+
 int guiwire_server_pico_app_run(const guiwire_server_pico_app_config_t *cfg) {
     guiwire_pico_uart_t uart;
     guiwire_host_t host;
@@ -264,8 +301,6 @@ int guiwire_server_pico_app_run(const guiwire_server_pico_app_config_t *cfg) {
     bool debug_button_mode = false;
     bool debug_button_last_level = true;
     uint32_t debug_button_last_change_ms = 0u;
-    uint32_t debug_last_session_resets = 0u;
-    uint32_t debug_last_valid_packets = 0u;
 #endif
 
     if (!cfg || !cfg->renderer || !cfg->uart) return -1;
@@ -296,9 +331,15 @@ int guiwire_server_pico_app_run(const guiwire_server_pico_app_config_t *cfg) {
     /* The protocol is request/response, so a shorter poll interval reduces
      * latency when a device has several small incremental updates queued. */
     host_io.poll_interval_ms = 10u;
-    host_io.session_timeout_ms = 500u;
+    host_io.session_timeout_ms = 1500u;
     host_io.max_missed_responses = 3u;
     host_io.base_baud = GUIWIRE_UART_BAUD;
+    host_io.baud_fallback_ms = 400u;
+    host_io.new_session_token = host_new_session_token;
+    host_io.session_token_ctx = NULL;
+    host_io.require_reliable_session = true;
+    host_io.read_time_ms = host_time_ms;
+    host_io.time_ctx = NULL;
 #if GUIWIRE_ENABLE_BAUD_NEGOTIATION
     host_io.supported_bauds = gui_wire_supported_bauds;
     host_io.supported_baud_count = (uint8_t)(sizeof(gui_wire_supported_bauds) /
@@ -333,8 +374,6 @@ int guiwire_server_pico_app_run(const guiwire_server_pico_app_config_t *cfg) {
     if (guiwire_host_init(&host, &server_cfg, &host_io) != GUIWIRE_STATUS_OK) return -2;
 #if defined(GUIWIRE_SERVER_DEBUG_DISPLAY)
     display_renderer = host.server.cfg.renderer;
-    debug_last_session_resets = host.session_resets;
-    debug_last_valid_packets = host.valid_packets;
     if (debug_active) host.server.cfg.renderer = &debug_noop_renderer;
 #endif
 
@@ -344,6 +383,7 @@ int guiwire_server_pico_app_run(const guiwire_server_pico_app_config_t *cfg) {
             uint8_t byte = uart_service_read_byte(&uart_service);
             guiwire_host_feed_byte(&host, byte, now_ms);
         }
+        now_ms = to_ms_since_boot(get_absolute_time());
         guiwire_host_tick(&host, now_ms);
 #if defined(GUIWIRE_SERVER_DEBUG_DISPLAY)
         if (cfg->debug_button_pin >= 0) {
@@ -358,25 +398,19 @@ int guiwire_server_pico_app_run(const guiwire_server_pico_app_config_t *cfg) {
                 next_debug_ms = now_ms;
                 host.server.cfg.renderer = debug_active ? &debug_noop_renderer : display_renderer;
                 if (!debug_active) {
-                    if (host.connected) {
+                    if (host.connected && !host.initial_sync) {
                         (void)guiwire_server_redraw(&host.server);
                     } else {
-                        (void)guiwire_server_reset_scene(&host.server);
+                        /* Redraw a neutral status without modifying the
+                         * session model or asking the Device for a snapshot. */
+                        (void)guiwire_server_fill_bg(&host.server, 0u, 0u,
+                                                     host.server.cfg.display_size.width,
+                                                     host.server.cfg.display_size.height,
+                                                     guiwire_rgb565(0u, 0u, 0u));
+                        (void)guiwire_server_show_waiting(&host.server);
                     }
                 }
             }
-        }
-        if (debug_active &&
-            (host.session_resets != debug_last_session_resets ||
-             host.valid_packets != debug_last_valid_packets)) {
-            /* Protocol handlers can redraw the normal scene (PING,
-             * disconnect, and object packets). Repaint the held-button
-             * diagnostic view immediately after such a handler, instead of
-             * leaving the normal screen visible until the 500 ms refresh. */
-            debug_last_session_resets = host.session_resets;
-            debug_last_valid_packets = host.valid_packets;
-            debug_initialized = false;
-            next_debug_ms = now_ms;
         }
         if (debug_active && (int32_t)(now_ms - next_debug_ms) >= 0) {
             debug_redraw(&host, &uart, &debug_initialized, display_renderer);

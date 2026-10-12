@@ -23,6 +23,7 @@ target_link_libraries(guiwire_server_ili9488_pico PRIVATE
     guiwire_display_ili9488
     guiwire_platform_pico
     pico_multicore
+    pico_rand
     pico_stdlib
     hardware_spi
     hardware_uart

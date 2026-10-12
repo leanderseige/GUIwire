@@ -20,6 +20,7 @@ function(guiwire_add_ssd1306_firmware target height display_target)
         ${display_target}
         guiwire_platform_pico
         pico_multicore
+        pico_rand
         pico_stdlib
         hardware_spi
         hardware_uart

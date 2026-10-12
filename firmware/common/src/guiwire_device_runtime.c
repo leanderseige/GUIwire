@@ -69,6 +69,14 @@ static void runtime_restore_base_baud(guiwire_device_runtime_t *runtime) {
     runtime->baud_fallback_active = false;
 }
 
+static void runtime_note_authenticated_host(guiwire_device_runtime_t *runtime) {
+    runtime->last_host_ms = runtime->now_ms;
+    if (runtime->baud_fallback_active) {
+        runtime->baud_fallback_deadline_ms = runtime->now_ms +
+            (runtime->io.baud_fallback_ms ? runtime->io.baud_fallback_ms : 1000u);
+    }
+}
+
 /* On small MCUs this packet buffer must not share the PING/session-start
  * stack frame.  The snapshot callback creates several objects and its stack
  * use is already substantial on an ATmega328P. */
@@ -87,63 +95,137 @@ static void runtime_reply_to_poll(guiwire_device_runtime_t *runtime) {
     }
 }
 
+/* The first queued object remains pending until the next POLL carries its
+ * sequence as an ACK. A lost/corrupt response is therefore sent again. */
+#if defined(__GNUC__)
+__attribute__((noinline))
+#endif
+static void runtime_reply_to_session_poll(guiwire_device_runtime_t *runtime,
+                                          uint16_t acknowledged_sequence) {
+    const uint8_t *queued;
+    size_t queued_len;
+    guiwire_packet_view_t view;
+    uint8_t payload[GUIWIRE_MAX_PACKET_SIZE - sizeof(guiwire_packet_header_t)];
+
+    if (runtime->inflight && acknowledged_sequence == runtime->next_sequence) {
+        (void)guiwire_device_commit(&runtime->device);
+        runtime->next_sequence++;
+        /* 0xFFFF is reserved for "no ACK yet" on session start. */
+        if (runtime->next_sequence == GUIWIRE_SESSION_NO_ACK) runtime->next_sequence = 0u;
+        runtime->inflight = false;
+    }
+    runtime->last_host_ms = runtime->now_ms;
+    memcpy(payload, runtime->session_token, GUIWIRE_SESSION_TOKEN_SIZE);
+    if (!guiwire_device_peek(&runtime->device, &queued, &queued_len)) {
+        (void)runtime_send_command_payload(runtime, GUIWIRE_CMD_SESSION_EMPTY,
+                                           payload, GUIWIRE_SESSION_TOKEN_SIZE);
+        return;
+    }
+    if (guiwire_protocol_parse(queued, queued_len, &view) != GUIWIRE_STATUS_OK ||
+        view.header.payload_len + GUIWIRE_SESSION_DATA_OVERHEAD +
+            sizeof(guiwire_packet_header_t) > GUIWIRE_MAX_PACKET_SIZE) return;
+
+    guiwire_write_u16le(&payload[8], runtime->next_sequence);
+    payload[10] = view.header.command;
+    memcpy(&payload[11], view.payload, view.header.payload_len);
+    if (runtime_send_command_payload(runtime, GUIWIRE_CMD_SESSION_DATA, payload,
+                                     (uint16_t)(11u + view.header.payload_len)) == GUIWIRE_STATUS_OK) {
+        runtime->inflight = true;
+    }
+}
+
+static bool runtime_session_matches(const guiwire_device_runtime_t *runtime,
+                                    const uint8_t *token) {
+    return runtime->reliable_session &&
+           guiwire_device_session_active(&runtime->device) &&
+           memcmp(token, runtime->session_token, GUIWIRE_SESSION_TOKEN_SIZE) == 0;
+}
+
+static void runtime_session_mismatch(guiwire_device_runtime_t *runtime,
+                                     const uint8_t *request_token) {
+    (void)runtime_send_command_payload(runtime, GUIWIRE_CMD_SESSION_MISMATCH,
+                                       request_token, GUIWIRE_SESSION_TOKEN_SIZE);
+}
+
 static void runtime_packet(void *ctx, const uint8_t *packet, size_t len) {
     guiwire_device_runtime_t *runtime = (guiwire_device_runtime_t *)ctx;
     guiwire_packet_view_t view;
 
     if (!runtime || guiwire_protocol_parse(packet, len, &view) != GUIWIRE_STATUS_OK) return;
 
-    if (runtime->baud_fallback_active) {
-        runtime->baud_fallback_deadline_ms = runtime->now_ms +
-            (runtime->io.baud_fallback_ms ? runtime->io.baud_fallback_ms : 1000u);
-    }
-
     if (view.header.command == GUIWIRE_CMD_PING) {
         if (!deadline_reached(runtime->now_ms, runtime->tx_guard_until_ms)) return;
+        if (view.header.payload_len != 0u &&
+            view.header.payload_len != GUIWIRE_SESSION_TOKEN_SIZE) return;
         /* Every PING starts a fresh display session, including a fast
-         * reconnect before the old 300 ms timeout has elapsed. */
+         * reconnect before the previous session timeout has elapsed. */
         guiwire_device_clear_queue(&runtime->device);
         guiwire_device_set_session(&runtime->device, true);
+        runtime->reliable_session = view.header.payload_len == GUIWIRE_SESSION_TOKEN_SIZE;
+        runtime->inflight = false;
+        runtime->next_sequence = 0u;
+        if (runtime->reliable_session) {
+            memcpy(runtime->session_token, view.payload, GUIWIRE_SESSION_TOKEN_SIZE);
+        }
         if (runtime->on_session_start) {
             runtime->on_session_start(runtime->session_ctx, &runtime->device);
         }
-        runtime->last_host_ms = runtime->now_ms;
-        (void)runtime_send_command(runtime, GUIWIRE_CMD_PING);
+        runtime_note_authenticated_host(runtime);
+        (void)runtime_send_command_payload(runtime, GUIWIRE_CMD_PING,
+                                           runtime->reliable_session ? runtime->session_token : NULL,
+                                           runtime->reliable_session ? GUIWIRE_SESSION_TOKEN_SIZE : 0u);
         return;
     }
 
-    if (view.header.command == GUIWIRE_CMD_GET_LINK_INFO &&
-        guiwire_device_session_active(&runtime->device)) {
-        uint8_t response[33];
+    if (view.header.command == GUIWIRE_CMD_GET_LINK_INFO) {
+        uint8_t response[41];
         uint8_t count = runtime->io.supported_baud_count;
+        uint8_t offset = runtime->reliable_session ? GUIWIRE_SESSION_TOKEN_SIZE : 0u;
         uint8_t i;
 
+        if (view.header.payload_len == GUIWIRE_SESSION_TOKEN_SIZE &&
+            !runtime_session_matches(runtime, view.payload)) {
+            runtime_session_mismatch(runtime, view.payload);
+            return;
+        }
+        if (!guiwire_device_session_active(&runtime->device) ||
+            view.header.payload_len != offset) return;
+        runtime_note_authenticated_host(runtime);
         if (!runtime->io.supported_bauds || !count) return;
         if (count > 8u) count = 8u;
-        response[0] = count;
+        if (offset) memcpy(response, runtime->session_token, offset);
+        response[offset] = count;
         for (i = 0u; i < count; ++i) {
-            guiwire_write_u32le(&response[1u + (uint16_t)i * 4u],
+            guiwire_write_u32le(&response[offset + 1u + (uint16_t)i * 4u],
                                 runtime->io.supported_bauds[i]);
         }
         (void)runtime_send_command_payload(runtime, GUIWIRE_CMD_LINK_INFO,
-                                           response, (uint16_t)(1u + count * 4u));
+                                           response, (uint16_t)(offset + 1u + count * 4u));
         return;
     }
 
-    if (view.header.command == GUIWIRE_CMD_SET_BAUD &&
-        guiwire_device_session_active(&runtime->device)) {
+    if (view.header.command == GUIWIRE_CMD_SET_BAUD) {
         uint32_t requested_baud;
-        uint8_t response[5];
+        uint8_t response[13];
+        uint8_t offset = runtime->reliable_session ? GUIWIRE_SESSION_TOKEN_SIZE : 0u;
 
-        if (view.header.payload_len != 5u || !runtime->io.set_baud ||
+        if (view.header.payload_len == 13u &&
+            !runtime_session_matches(runtime, view.payload)) {
+            runtime_session_mismatch(runtime, view.payload);
+            return;
+        }
+        if (!guiwire_device_session_active(&runtime->device) ||
+            view.header.payload_len != (uint16_t)(offset + 5u) || !runtime->io.set_baud ||
             !runtime->io.supported_bauds || !runtime->io.supported_baud_count) return;
-        requested_baud = guiwire_read_u32le(view.payload);
+        runtime_note_authenticated_host(runtime);
+        requested_baud = guiwire_read_u32le(&view.payload[offset]);
         if (!runtime_baud_supported(runtime, requested_baud)) return;
 
-        guiwire_write_u32le(response, requested_baud);
-        response[4] = view.payload[4];
+        if (offset) memcpy(response, runtime->session_token, offset);
+        guiwire_write_u32le(&response[offset], requested_baud);
+        response[offset + 4u] = view.payload[offset + 4u];
         if (runtime_send_command_payload(runtime, GUIWIRE_CMD_BAUD_ACK,
-                                          response, sizeof(response)) != GUIWIRE_STATUS_OK) {
+                                          response, (uint16_t)(offset + 5u)) != GUIWIRE_STATUS_OK) {
             return;
         }
         if (runtime->io.set_baud(runtime->io.set_baud_ctx, requested_baud) != GUIWIRE_STATUS_OK) {
@@ -157,10 +239,19 @@ static void runtime_packet(void *ctx, const uint8_t *packet, size_t len) {
         return;
     }
 
-    if (view.header.command != GUIWIRE_CMD_POLL ||
-        !guiwire_device_session_active(&runtime->device)) return;
-
-    runtime_reply_to_poll(runtime);
+    if (view.header.command != GUIWIRE_CMD_POLL) return;
+    if (view.header.payload_len == 10u) {
+        if (!runtime_session_matches(runtime, view.payload)) {
+            runtime_session_mismatch(runtime, view.payload);
+            return;
+        }
+        runtime_note_authenticated_host(runtime);
+        runtime_reply_to_session_poll(runtime, guiwire_read_u16le(&view.payload[8]));
+    } else if (view.header.payload_len == 0u && !runtime->reliable_session &&
+               guiwire_device_session_active(&runtime->device)) {
+        runtime_note_authenticated_host(runtime);
+        runtime_reply_to_poll(runtime);
+    }
 }
 
 guiwire_status_t guiwire_device_runtime_init(guiwire_device_runtime_t *runtime,
@@ -202,6 +293,8 @@ void guiwire_device_runtime_tick(guiwire_device_runtime_t *runtime, uint32_t now
         now_ms - runtime->last_host_ms >= timeout) {
         runtime_restore_base_baud(runtime);
         guiwire_device_set_session(&runtime->device, false);
+        runtime->reliable_session = false;
+        runtime->inflight = false;
         if (runtime->on_session_end) runtime->on_session_end(runtime->session_ctx, &runtime->device);
     }
 }

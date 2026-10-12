@@ -28,6 +28,7 @@
 #define COLOR_BLACK       0x0000u
 #define COLOR_WHITE       0xFFFFu
 #define COLOR_DARK_GREY   0x4208u
+#define UART_RX_RING_SIZE 64u
 
 #ifndef GUIWIRE_ENABLE_BAUD_NEGOTIATION
 #define GUIWIRE_ENABLE_BAUD_NEGOTIATION 0
@@ -48,6 +49,13 @@ static char g_adc0_text[9];
 static char g_adc1_text[9];
 /* "1/100: 100%" needs 11 visible characters plus NUL. */
 static char g_hundredths_text[12];
+static volatile uint8_t g_uart_rx_ring[UART_RX_RING_SIZE];
+static volatile uint8_t g_uart_rx_head;
+static volatile uint8_t g_uart_rx_tail;
+static volatile uint8_t g_uart_rx_fault;
+static uint16_t g_adc_sample[2];
+static uint8_t g_adc_channel;
+static uint8_t g_adc_discard;
 
 static const guiwire_color_t g_palette[] = {
     0xF800u, /* red */
@@ -62,7 +70,7 @@ static const guiwire_color_t g_palette[] = {
 
 #if GUIWIRE_ENABLE_BAUD_NEGOTIATION
 static const uint32_t gui_wire_supported_bauds[] = {
-    9600UL, 38400UL, 57600UL
+    9600UL, 19200UL, 38400UL, 57600UL
 };
 #endif
 
@@ -71,8 +79,40 @@ static void uart_init_baud(uint32_t baud) {
     UCSR0A = (uint8_t)(1u << U2X0);
     UBRR0H = (uint8_t)(ubrr >> 8);
     UBRR0L = (uint8_t)ubrr;
-    UCSR0B = (uint8_t)((1u << RXEN0) | (1u << TXEN0));
+    UCSR0B = (uint8_t)((1u << RXEN0) | (1u << TXEN0) | (1u << RXCIE0));
     UCSR0C = (uint8_t)((1u << UCSZ01) | (1u << UCSZ00));
+}
+
+ISR(USART_RX_vect) {
+    uint8_t status = UCSR0A;
+    uint8_t byte = UDR0;
+    uint8_t next = (uint8_t)((g_uart_rx_head + 1u) & (UART_RX_RING_SIZE - 1u));
+    if ((status & ((1u << FE0) | (1u << DOR0) | (1u << UPE0))) != 0u ||
+        next == g_uart_rx_tail) {
+        g_uart_rx_fault = 1u;
+        return;
+    }
+    g_uart_rx_ring[g_uart_rx_head] = byte;
+    g_uart_rx_head = next;
+}
+
+static uint8_t uart_rx_pop(uint8_t *byte) {
+    uint8_t tail = g_uart_rx_tail;
+    if (tail == g_uart_rx_head) return 0u;
+    *byte = g_uart_rx_ring[tail];
+    g_uart_rx_tail = (uint8_t)((tail + 1u) & (UART_RX_RING_SIZE - 1u));
+    return 1u;
+}
+
+static uint8_t uart_rx_take_fault(void) {
+    uint8_t saved_sreg = SREG;
+    uint8_t fault;
+    cli();
+    fault = g_uart_rx_fault;
+    g_uart_rx_fault = 0u;
+    if (fault) g_uart_rx_tail = g_uart_rx_head;
+    SREG = saved_sreg;
+    return fault;
 }
 
 #if GUIWIRE_ENABLE_BAUD_NEGOTIATION
@@ -82,10 +122,13 @@ static guiwire_status_t uart_set_baud(void *ctx, uint32_t baud) {
     if (!baud) return GUIWIRE_STATUS_ERR_INVALID_ARGUMENT;
     ubrr_value = (F_CPU / (8UL * baud)) - 1UL;
     if (ubrr_value > 65535UL) return GUIWIRE_STATUS_ERR_INVALID_ARGUMENT;
-    while ((UCSR0A & (1u << TXC0)) == 0u) { }
-    UCSR0A |= (uint8_t)(1u << TXC0);
+    /* tx_complete has already waited for the final stop bit and CLEARED
+     * TXC0. Waiting for TXC0 here would deadlock until another transmission. */
+    UCSR0B &= (uint8_t)~((1u << RXEN0) | (1u << RXCIE0));
+    g_uart_rx_tail = g_uart_rx_head;
     UBRR0H = (uint8_t)(ubrr_value >> 8);
     UBRR0L = (uint8_t)ubrr_value;
+    UCSR0B |= (uint8_t)((1u << RXEN0) | (1u << RXCIE0));
     return GUIWIRE_STATUS_OK;
 }
 #endif
@@ -104,13 +147,13 @@ static void uart_tx_complete(void *ctx) {
     _delay_ms(1.0);
     /* The transceiver is half-duplex. Re-enable RX only after our final bit
      * has left the wire, so our own response cannot enter the parser. */
-    UCSR0B |= (uint8_t)(1u << RXEN0);
+    UCSR0B |= (uint8_t)((1u << RXEN0) | (1u << RXCIE0));
 }
 
 static void uart_tx_begin(void *ctx) {
     (void)ctx;
     /* Suppress the local transceiver echo for the complete response. */
-    UCSR0B &= (uint8_t)~(1u << RXEN0);
+    UCSR0B &= (uint8_t)~((1u << RXEN0) | (1u << RXCIE0));
     _delay_ms(2.0);
 }
 
@@ -120,13 +163,22 @@ static void adc_init(void) {
     ADCSRA = (uint8_t)((1u << ADEN) | (1u << ADPS2) |
                        (1u << ADPS1) | (1u << ADPS0));
     DIDR0 = (uint8_t)((1u << ADC0D) | (1u << ADC1D));
+    g_adc_channel = 0u;
+    g_adc_discard = 1u;
+    ADCSRA |= (uint8_t)(1u << ADSC);
 }
 
-static uint16_t adc_read(uint8_t channel) {
-    ADMUX = (uint8_t)((1u << REFS0) | (channel & 0x07u));
+static void adc_service(void) {
+    if ((ADCSRA & (1u << ADSC)) != 0u) return;
+    if (g_adc_discard) {
+        g_adc_discard = 0u;
+    } else {
+        g_adc_sample[g_adc_channel] = ADC;
+        g_adc_channel ^= 1u;
+        ADMUX = (uint8_t)((1u << REFS0) | g_adc_channel);
+        g_adc_discard = 1u;
+    }
     ADCSRA |= (uint8_t)(1u << ADSC);
-    while ((ADCSRA & (1u << ADSC)) != 0u) { }
-    return ADC;
 }
 
 static uint32_t random_next(void) {
@@ -240,8 +292,8 @@ static void build_snapshot(void *ctx, guiwire_device_t *device) {
     g_last_hundredths = hundredths;
     g_next_update_ms = 0u;
 
-    adc0_percent = adc_to_percent(adc_read(0u));
-    adc1_percent = adc_to_percent(adc_read(1u));
+    adc0_percent = adc_to_percent(g_adc_sample[0]);
+    adc1_percent = adc_to_percent(g_adc_sample[1]);
     format_time(now_ms);
     format_percent(g_adc0_text, "A0", 2u, adc0_percent);
     format_percent(g_adc1_text, "A1", 2u, adc1_percent);
@@ -270,10 +322,8 @@ ISR(TIMER0_COMPA_vect) {
 }
 
 static void update_display(guiwire_device_t *device, uint32_t elapsed_ms) {
-    uint16_t adc0_sample = adc_read(0u);
-    uint16_t adc1_sample = adc_read(1u);
-    uint8_t adc0_percent = adc_to_percent(adc0_sample);
-    uint8_t adc1_percent = adc_to_percent(adc1_sample);
+    uint8_t adc0_percent = adc_to_percent(g_adc_sample[0]);
+    uint8_t adc1_percent = adc_to_percent(g_adc_sample[1]);
     uint8_t hundredths = (uint8_t)((elapsed_ms / 10UL) % 100UL);
     uint8_t hundredths_wrapped = (uint8_t)(hundredths < g_last_hundredths);
     guiwire_text_update_t text_update;
@@ -347,14 +397,21 @@ static guiwire_status_t initialize_runtime(void) {
     io.tx_begin_ctx = NULL;
     io.tx_complete = uart_tx_complete;
     io.tx_complete_ctx = NULL;
-    io.session_timeout_ms = 300u;
+#if GUIWIRE_ENABLE_BAUD_NEGOTIATION
+    /* Survive a failed high-rate trial and the Host's quiet fallback window
+     * without discarding the GUI queue. The Host still detects unplugging. */
+    io.session_timeout_ms = 2500u;
+#else
+    /* Keep the known-good fixed-rate session behavior unchanged. */
+    io.session_timeout_ms = 1500u;
+#endif
     io.echo_guard_ms = 5u;
     io.base_baud = BAUD;
 #if GUIWIRE_ENABLE_BAUD_NEGOTIATION
     io.supported_bauds = gui_wire_supported_bauds;
     io.supported_baud_count = (uint8_t)(sizeof(gui_wire_supported_bauds) /
                                         sizeof(gui_wire_supported_bauds[0]));
-    io.baud_fallback_ms = 1000u;
+    io.baud_fallback_ms = 400u;
     io.set_baud = uart_set_baud;
     io.set_baud_ctx = NULL;
 #else
@@ -368,6 +425,7 @@ static guiwire_status_t initialize_runtime(void) {
 }
 
 int main(void) {
+    uint8_t byte;
     uart_init_baud(BAUD);
     adc_init();
     timer_init();
@@ -376,10 +434,14 @@ int main(void) {
 
     for (;;) {
         g_now_ms = millis_now();
-        while ((UCSR0A & (1u << RXC0)) != 0u) {
-            guiwire_device_runtime_feed_byte(&g_runtime, UDR0, g_now_ms);
+        if (uart_rx_take_fault()) {
+            guiwire_link_reset(&g_runtime.link);
+        }
+        while (uart_rx_pop(&byte)) {
+            guiwire_device_runtime_feed_byte(&g_runtime, byte, g_now_ms);
         }
         guiwire_device_runtime_tick(&g_runtime, g_now_ms);
+        adc_service();
         if (guiwire_device_runtime_connected(&g_runtime) &&
             g_now_ms >= g_next_update_ms &&
             guiwire_device_pending(&g_runtime.device) == 0u) {

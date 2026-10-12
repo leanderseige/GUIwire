@@ -52,6 +52,11 @@ guiwire_status_t guiwire_device_queue_command(guiwire_device_t *device,
                                  sizeof(device->queue[device->head].data),
                                  &packet_len);
     if (st != GUIWIRE_STATUS_OK) return st;
+    /* A session DATA envelope needs eleven more bytes on the wire. Enforce
+     * this at enqueue time so an unsendable packet cannot block the queue. */
+    if (packet_len + GUIWIRE_SESSION_DATA_OVERHEAD > GUIWIRE_MAX_PACKET_SIZE) {
+        return GUIWIRE_STATUS_ERR_BUFFER_TOO_SMALL;
+    }
 
     device->queue[device->head].len = (uint16_t)packet_len;
     device->head = (uint8_t)((device->head + 1u) % GUIWIRE_DEVICE_QUEUE_CAPACITY);
@@ -60,14 +65,24 @@ guiwire_status_t guiwire_device_queue_command(guiwire_device_t *device,
 }
 
 bool guiwire_device_pop(guiwire_device_t *device, uint8_t *packet, size_t capacity, size_t *out_len) {
-    guiwire_device_queue_entry_t *entry;
+    const uint8_t *source;
 
     if (!device || !packet || !out_len || device->count == 0u) return false;
-    entry = &device->queue[device->tail];
-    if (entry->len > capacity) return false;
-    memcpy(packet, entry->data, entry->len);
-    *out_len = entry->len;
-    entry->len = 0u;
+    if (!guiwire_device_peek(device, &source, out_len) || *out_len > capacity) return false;
+    memcpy(packet, source, *out_len);
+    return guiwire_device_commit(device);
+}
+
+bool guiwire_device_peek(const guiwire_device_t *device, const uint8_t **packet, size_t *out_len) {
+    if (!device || !packet || !out_len || device->count == 0u) return false;
+    *packet = device->queue[device->tail].data;
+    *out_len = device->queue[device->tail].len;
+    return true;
+}
+
+bool guiwire_device_commit(guiwire_device_t *device) {
+    if (!device || device->count == 0u) return false;
+    device->queue[device->tail].len = 0u;
     device->tail = (uint8_t)((device->tail + 1u) % GUIWIRE_DEVICE_QUEUE_CAPACITY);
     device->count--;
     return true;
@@ -319,7 +334,8 @@ guiwire_status_t guiwire_device_create_waveform(guiwire_device_t *client, const 
 }
 
 guiwire_status_t guiwire_device_update_waveform_full(guiwire_device_t *client, const guiwire_waveform_full_update_t *update) {
-    enum { GUIWIRE_MAX_WAVEFORM_FULL_UPDATE_SAMPLES = (GUIWIRE_MAX_PACKET_SIZE - 6u - 5u) / 2u };
+    enum { GUIWIRE_MAX_WAVEFORM_FULL_UPDATE_SAMPLES =
+        (GUIWIRE_MAX_PACKET_SIZE - 6u - GUIWIRE_SESSION_DATA_OVERHEAD - 5u) / 2u };
     uint8_t payload[5u + (GUIWIRE_MAX_WAVEFORM_FULL_UPDATE_SAMPLES * 2u)];
     uint16_t payload_len;
     uint8_t i;

@@ -8,7 +8,7 @@
 #include "board_config.h"
 
 static const uint32_t gui_wire_supported_bauds[] = {
-    9600u, 38400u, 57600u
+    9600u, 19200u, 38400u, 57600u
 };
 
 typedef struct {
@@ -26,11 +26,15 @@ static void demo_tx_complete(void *ctx) {
     guiwire_pico_uart_t *uart = (guiwire_pico_uart_t *)ctx;
     if (!uart || !uart->uart) return;
     uart_tx_wait_blocking(uart->uart);
-    sleep_ms(2u);
+    sleep_ms(1u);
+    while (uart_is_readable(uart->uart)) (void)uart_getc(uart->uart);
+    uart_get_hw(uart->uart)->cr |= UART_UARTCR_RXE_BITS;
 }
 
 static void demo_tx_begin(void *ctx) {
-    (void)ctx;
+    guiwire_pico_uart_t *uart = (guiwire_pico_uart_t *)ctx;
+    if (!uart || !uart->uart) return;
+    uart_get_hw(uart->uart)->cr &= ~UART_UARTCR_RXE_BITS;
     /* Let the Host discard its own local echo before our response starts. */
     sleep_ms(2u);
 }
@@ -79,13 +83,13 @@ int main(void) {
     io.tx_begin_ctx = &demo.uart;
     io.tx_complete = demo_tx_complete;
     io.tx_complete_ctx = &demo.uart;
-    io.session_timeout_ms = 300u;
+    io.session_timeout_ms = 2500u;
     io.echo_guard_ms = 5u;
     io.base_baud = GUIWIRE_UART_BAUD;
     io.supported_bauds = gui_wire_supported_bauds;
     io.supported_baud_count = (uint8_t)(sizeof(gui_wire_supported_bauds) /
                                         sizeof(gui_wire_supported_bauds[0]));
-    io.baud_fallback_ms = 1000u;
+    io.baud_fallback_ms = 400u;
     io.set_baud = guiwire_platform_pico_uart_set_baud;
     io.set_baud_ctx = &demo.uart;
     if (guiwire_device_runtime_init(&demo.runtime, &io, demo_build_snapshot, NULL, &demo) != GUIWIRE_STATUS_OK) {

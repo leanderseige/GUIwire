@@ -1,11 +1,16 @@
 # GUIwire RP2040 Demo Client
 
 This is a GUIwire Device demo. It sends a complete initial interface after
-`PING` and periodically updates a progress bar after `POLL` requests.
+`PING` and periodically updates a progress bar after `POLL` requests. The
+initial PING binds an eight-byte session token, so the display can detect a
+client swap even when both clients are already running. GUI packets are
+retained and retransmitted until the Host acknowledges their sequence.
 
-It starts at 9600 baud and negotiates 38400 or 57600 baud when the Host
-advertises and acknowledges that rate. If the new rate does not work, the
-Device returns to 9600 baud after its fallback timeout.
+It starts at 9600 baud and advertises 19200, 38400 and 57600 baud. The Host
+tests common rates step by step while normal display updates continue. Each
+new rate is used only after an acknowledgement at the previous rate. If the
+link then falls silent, the Device returns to 9600 baud after 400 ms without
+discarding its queued GUI updates.
 
 ## Compile
 

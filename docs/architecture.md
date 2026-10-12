@@ -25,6 +25,15 @@ The library is split into two reusable runtimes:
 The lower-level `guiwire_core` and `guiwire_device` targets can also be used
 directly when an application needs a custom scheduler.
 
+A port of the reliable Host runtime supplies a fresh eight-byte token for
+each discovery attempt through `new_session_token`; the Pico port uses the
+Pico SDK random source. Setting `require_reliable_session` rejects
+untagged legacy peers instead of silently losing client-switch detection.
+The optional `read_time_ms` callback lets a slow display backend refresh
+link deadlines after synchronous drawing. Device ports need UART byte I/O,
+turnaround hooks and (for adaptive mode) a baud-change hook; they do not need
+a random-number source.
+
 ## Roles
 
 GUIwire has two application roles:
@@ -61,42 +70,66 @@ starts discovery with `PING`:
 ```text
 Host                                      Device
 
-PING request ───────────────────────────────►
-             ◄────────────────────────────── PING response
-GET_LINK_INFO ──────────────────────────────►
-             ◄──────── LINK_INFO (common rates)
-SET_BAUD ───────────────────────────────────►
-             ◄──────── BAUD_ACK, then both switch rates
-POLL ───────────────────────────────────────►
-             ◄──────── HELLO_STRING / GUI object / NO_DATA
-POLL ───────────────────────────────────────►
-             ◄──────── next queued GUI command
+PING(session token) ────────────────────────►
+             ◄────────────────────────────── PING(echo token)
+POLL(token, ACK) ───────────────────────────►
+             ◄──────── SESSION_DATA(seq, GUI command)
+POLL(token, seq) ───────────────────────────► (ACK commits queue head)
+             ◄──────── next SESSION_DATA or SESSION_EMPTY
+GET_LINK_INFO(token) ───────────────────────►
+             ◄──────── LINK_INFO(token, common rates)
+SET_BAUD(token, next higher rate) ───────────►
+             ◄──────── BAUD_ACK at old rate, then both switch
+POLL(token, ACK) ───────────────────────────►
+             ◄──────── session-tagged response validates new rate
 ```
 
 The Device queues its current interface and subsequent state changes. One
-`POLL` obtains at most one application packet. A Host repeats `POLL` until
-it receives `NO_DATA`; it may then poll again when it expects a state change.
+`POLL` obtains at most one session-tagged application packet. The Device
+retains that packet until the next `POLL` acknowledges its sequence. A Host
+repeats `POLL` until it receives `SESSION_EMPTY`; it continues to poll while
+the session remains active.
 
 The rate exchange is optional for compatibility. Both endpoints begin at the
 9600-baud startup rate; a legacy Device that does not answer `GET_LINK_INFO`
-is simply used at that rate. A failed switch is recovered by the Device's
-fallback timer and the Host's base-rate retry.
+is simply used at that rate. The adaptive Host first builds the GUI and then
+tests common higher rates one step at a time in normal request/response slots.
+Three valid `POLL` responses confirm a step. A failed switch is recovered by
+the Device's fallback timer and the Host's base-rate retry without clearing
+the scene unless verification at the base rate also fails.
 
 This schedule preserves the object command profile while keeping line
 ownership explicit. A Device must not start a transmission spontaneously.
 
 ## Hot-patch handover
 
-The cable has no presence signal. The Host detects removal through missed
-responses and, after three missed responses or 500 ms, clears the old Device
-scene and enters discovery. The previous Device expires its session after at
-least 300 ms without a Host frame and drops its pending transmit queue.
+The cable has no presence signal. At the base rate, the Host detects removal
+through missed responses and clears the old Device scene before discovery.
+At a higher rate it first tries silent 9600-baud fallback so a rate-only
+failure need not erase the GUI; failed base-rate verification then clears the
+scene. The previous Device expires its session after its configured timeout
+without authenticated Host frames (2500 ms in the adaptive reference Device)
+and drops its pending
+transmit queue.
+
+If another already-running Device is attached at the same rate, it rejects
+the old session token with `SESSION_MISMATCH`. The Host immediately clears the
+old scene and starts a new `PING`. At a different rate, the Host first
+performs base-rate recovery, then detects the token mismatch. The reference
+Host requires token-aware peers; an untagged legacy reply is not treated as
+a robust GUIwire hot-patch session.
 
 The newly connected Device answers `PING` and begins its first response queue
 with `DESTROY_ALL_OBJECTS`, then sends its identity, descriptors and current
 state. The Host does not render object packets before that reset command and
-polls until `NO_DATA`. Thus the Host, the previous Device and the new Device
+polls until `SESSION_EMPTY`. Thus the Host, the previous Device and the new Device
 all reach a defined state when one cable is moved.
+
+The Host caches object descriptors and current values independently of the
+physical renderer. The local debug button temporarily routes rendering to a
+no-op backend while protocol updates continue to modify that cache. On
+release, the Host redraws from the cache; the Device need not resend the
+scene. A real disconnect or client switch invalidates the cache.
 
 ## Layering
 
