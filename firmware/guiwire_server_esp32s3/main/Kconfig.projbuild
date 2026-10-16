@@ -1,0 +1,20 @@
+menu "GUIwire ESP32-S3 AMOLED server"
+    choice GUIWIRE_BOARD_REVISION
+        prompt "Waveshare ESP32-S3-Touch-AMOLED-2.41 PCB revision"
+        default GUIWIRE_BOARD_V1
+        help
+            Check the PCB silkscreen: Rev2.0 means V2. The two versions use
+            different AMOLED reset and power wiring.
+
+        config GUIWIRE_BOARD_V1
+            bool "V1 (no Rev2.0 mark)"
+        config GUIWIRE_BOARD_V2
+            bool "V2 (Rev2.0 mark)"
+    endchoice
+
+    config GUIWIRE_ADAPTIVE_BAUD
+        bool "Negotiate 9600/19200/38400/57600 baud"
+        default y
+        help
+            Disabling this keeps a fixed, failsafe 9600-baud link.
+endmenu

@@ -168,15 +168,23 @@ static bool run_case(const char *name, uint8_t scenario) {
         .set_baud = device_set_baud, .set_baud_ctx = &bus
     };
     bool injected = false;
+    uint8_t missing_response_injections = 0u;
+    uint8_t trial_corruptions = 0u;
     uint32_t next_update_ms = 0u;
     uint16_t last_rendered_value = 32768u;
     unsigned rendered_updates = 0u;
+    uint32_t run_until_ms = (scenario == 6u || scenario == 9u) ? 145000u :
+                            (scenario == 0u || scenario == 3u || scenario == 5u ||
+                             scenario == 7u || scenario == 10u ||
+                             scenario == 11u) ? 75000u :
+                            scenario == 8u ? 100000u : 18000u;
 
     bus.host = &host;
     bus.device = &device;
     bus.host_baud = 9600u;
     bus.device_baud = 9600u;
     if (scenario == 1u || scenario == 6u) bus.block_responses_at_baud = 38400u;
+    if (scenario == 8u || scenario == 9u) bus.block_responses_at_baud = 57600u;
     if (scenario == 2u) bus.drop_baud_ack_once = 1u;
     if (scenario == 4u) {
         device_io.supported_bauds = NULL;
@@ -190,8 +198,7 @@ static bool run_case(const char *name, uint8_t scenario) {
         return false;
     }
 
-    for (uint32_t ms = 0u; ms < (scenario == 6u ? 50000u :
-                                  scenario == 7u ? 16000u : 18000u); ms += 10u) {
+    for (uint32_t ms = 0u; ms < run_until_ms; ms += 10u) {
         bus.now_ms = ms;
         if (scenario == 6u && ms >= 15000u) bus.block_responses_at_baud = 0u;
         guiwire_device_runtime_tick(&device, ms);
@@ -225,12 +232,32 @@ static bool run_case(const char *name, uint8_t scenario) {
             bus.corrupt_one_response = 1u;
             injected = true;
         }
-        if (scenario == 7u && !injected && host.current_baud == 57600u &&
-            host.rate_stage == GUIWIRE_RATE_READY) {
+        if ((scenario == 7u || scenario == 10u) &&
+            missing_response_injections < 2u &&
+            host.current_baud == 57600u &&
+            host.rate_stage == GUIWIRE_RATE_READY &&
+            host.waiting == GUIWIRE_HOST_IDLE &&
+            (missing_response_injections == 0u ||
+             (host.rate_error_score == 1u && host.missed_responses == 0u))) {
             bus.drop_one_response = 1u;
-            bus.drop_baud_ack_once = 1u;
+            if (scenario == 7u && missing_response_injections == 1u) {
+                bus.drop_baud_ack_once = 1u;
+            }
+            missing_response_injections++;
             injected = true;
         }
+        if (scenario == 11u && trial_corruptions < 2u &&
+            host.current_baud == 57600u &&
+            host.rate_stage == GUIWIRE_RATE_TRIAL &&
+            host.waiting == GUIWIRE_HOST_IDLE &&
+            (trial_corruptions == 0u || host.trial_good_responses >= 1u)) {
+            bus.corrupt_one_response = 1u;
+            trial_corruptions++;
+            injected = true;
+        }
+        if (scenario == 7u && injected && host.rate_failures &&
+            host.current_baud == 9600u &&
+            host.rate_stage == GUIWIRE_RATE_VERIFY_BASE) break;
         if (!scene_ok(&host) && ms > 1000u) break;
     }
 
@@ -239,19 +266,35 @@ static bool run_case(const char *name, uint8_t scenario) {
         (scenario == 0u && (host.current_baud != 57600u || host.rate_upshifts != 3u)) ||
         (scenario == 1u && (host.current_baud != 19200u || host.rate_failures == 0u)) ||
         (scenario == 2u && (host.current_baud != 9600u || host.rate_failures == 0u)) ||
-        (scenario == 3u && (!injected || host.current_baud != 38400u ||
-                            host.rate_downshifts == 0u)) ||
+        (scenario == 3u && (!injected || host.current_baud != 57600u ||
+                            host.rate_downshifts != 0u)) ||
         (scenario == 4u && (host.current_baud != 9600u ||
                             host.rate_stage != GUIWIRE_RATE_OFF)) ||
-        (scenario == 5u && (!injected || host.current_baud != 38400u ||
-                            host.rate_downshifts == 0u ||
+        (scenario == 5u && (!injected || host.current_baud != 57600u ||
+                            host.rate_downshifts != 0u ||
                             host.link.crc_errors == 0u)) ||
         (scenario == 6u && (host.current_baud != 57600u ||
                             host.rate_failures == 0u ||
                             host.rate_upshifts < 3u)) ||
         (scenario == 7u && (!injected || host.current_baud != 9600u ||
                             host.rate_failures == 0u ||
-                            host.failed_rate != 57600u))) {
+                            host.failed_rate != 57600u)) ||
+        (scenario == 8u && (host.current_baud != 38400u ||
+                            host.rate_failures != 1u ||
+                            host.rate_history[3].failed_trials != 1u ||
+                            host.rate_history[2].good_responses < 64u)) ||
+        (scenario == 9u && (host.current_baud != 38400u ||
+                            host.rate_failures != 2u ||
+                            host.rate_history[3].failed_trials != 2u ||
+                            host.rate_history[3].retry_after_ms < 200000u)) ||
+        (scenario == 10u && (!injected || missing_response_injections != 2u ||
+                             host.current_baud != 38400u ||
+                             host.rate_downshifts != 1u ||
+                             host.rate_failures != 0u)) ||
+        (scenario == 11u && (!injected || trial_corruptions != 2u ||
+                             host.current_baud != 38400u ||
+                             host.rate_downshifts != 1u ||
+                             host.rate_failures != 0u))) {
         fprintf(stderr,
                 "FAIL %s: host=%lu device=%lu stage=%u up=%lu down=%lu fail=%lu reset=%lu updates=%u\n",
                 name, (unsigned long)bus.host_baud, (unsigned long)bus.device_baud,
@@ -273,10 +316,14 @@ int main(void) {
     good &= run_case("upshift", 0u);
     good &= run_case("failed trial", 1u);
     good &= run_case("lost ACK", 2u);
-    good &= run_case("downshift", 3u);
+    good &= run_case("single missing response tolerated", 3u);
     good &= run_case("fixed-rate device", 4u);
-    good &= run_case("CRC downshift", 5u);
+    good &= run_case("single CRC tolerated", 5u);
     good &= run_case("retry after cooldown", 6u);
     good &= run_case("lost downshift ACK", 7u);
+    good &= run_case("failed upper probe held at 38400", 8u);
+    good &= run_case("upper probe exponential retry", 9u);
+    good &= run_case("intermittent loss downshift", 10u);
+    good &= run_case("intermittent trial corruption downshift", 11u);
     return good ? 0 : 1;
 }

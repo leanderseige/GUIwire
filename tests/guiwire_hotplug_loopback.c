@@ -41,6 +41,8 @@ struct bus {
     bool drop_next_data;
     bool corrupt_next_data;
     bool replay_old_response_once;
+    bool swap_on_upper_rate_request;
+    bool swapped_during_rate_request;
 };
 
 static guiwire_status_t draw_fill(void *ctx, uint16_t x, uint16_t y,
@@ -91,6 +93,13 @@ static guiwire_status_t device_write(void *ctx, uint8_t byte) {
 
 static void host_tx_done(void *ctx) {
     bus_t *bus = (bus_t *)ctx;
+    if (bus->swap_on_upper_rate_request &&
+        bus->host.waiting == GUIWIRE_HOST_WAIT_BAUD_ACK &&
+        bus->host.pending_baud == 57600u) {
+        bus->attached = &bus->b;
+        bus->swap_on_upper_rate_request = false;
+        bus->swapped_during_rate_request = true;
+    }
     if (bus->attached && bus->host_baud == bus->attached->baud) {
         for (size_t i = 0u; i < bus->host_len; ++i) {
             guiwire_device_runtime_feed_byte(&bus->attached->runtime,
@@ -328,24 +337,57 @@ static bool run_adaptive_swap(void) {
     if (!initialize(&bus, true)) return false;
     advance(&bus, 1000u);
     bus.attached = &bus.a;
-    advance(&bus, 19000u);
+    advance(&bus, 70000u);
     if (!scene_is(&bus, "CLIENT A", true) || bus.host.current_baud != 57600u) return false;
+    if (bus.host.best_proven_baud != 57600u ||
+        bus.host.rate_history[3].good_responses == 0u) return false;
     guiwire_device_set_session(&bus.b.runtime.device, true);
     bus.b.runtime.reliable_session = true;
     memset(bus.b.runtime.session_token, 0xB5, GUIWIRE_SESSION_TOKEN_SIZE);
     bus.b.runtime.last_host_ms = bus.now_ms;
     snapshot(&bus.b, &bus.b.runtime.device);
     bus.attached = &bus.b; /* B is at base rate while A was at 57600 */
-    advance(&bus, 21000u); /* no more than 2 s for fallback and new snapshot */
+    advance(&bus, 72000u); /* no more than 2 s for fallback and new snapshot */
     if (!scene_is(&bus, "CLIENT B", false) || bus.host.session_resets == 0u) return false;
-    advance(&bus, 23000u);
+    /* A's high-rate observations must never follow B into its new session. */
+    if (bus.host.rate_history[3].good_responses != 0u ||
+        bus.host.rate_history[3].failed_trials != 0u ||
+        bus.host.best_proven_baud > 19200u) return false;
+    advance(&bus, 74000u);
     if (!scene_is(&bus, "CLIENT B", false) || bus.host.session_resets == 0u) return false;
     printf("PASS adaptive: high-rate A to already-active base-rate B, clean new scene\n");
     return true;
 }
 
+static bool run_swap_during_rate_request(void) {
+    bus_t bus = {0};
+    if (!initialize(&bus, true)) return false;
+    bus.attached = &bus.a;
+    advance(&bus, 12000u);
+    if (!scene_is(&bus, "CLIENT A", true) ||
+        bus.host.current_baud != 38400u) return false;
+
+    /* B is already active; unplug A as the Host requests 57600 from it. */
+    guiwire_device_set_session(&bus.b.runtime.device, true);
+    bus.b.runtime.reliable_session = true;
+    memset(bus.b.runtime.session_token, 0xB5, GUIWIRE_SESSION_TOKEN_SIZE);
+    bus.b.runtime.last_host_ms = bus.now_ms;
+    snapshot(&bus.b, &bus.b.runtime.device);
+    bus.swap_on_upper_rate_request = true;
+    advance(&bus, 70000u);
+    if (!bus.swapped_during_rate_request ||
+        !scene_is(&bus, "CLIENT B", false) ||
+        bus.host.session_resets == 0u ||
+        bus.host.rate_history[3].good_responses != 0u ||
+        bus.host.rate_history[3].failed_trials != 0u ||
+        bus.host.best_proven_baud > 19200u) return false;
+    printf("PASS adaptive: swap during SET_BAUD, safe recovery and fresh history\n");
+    return true;
+}
+
 int main(void) {
-    if (!run_fixed() || !run_adaptive_swap()) {
+    if (!run_fixed() || !run_adaptive_swap() ||
+        !run_swap_during_rate_request()) {
         fprintf(stderr, "FAIL hotplug loopback\n");
         return 1;
     }

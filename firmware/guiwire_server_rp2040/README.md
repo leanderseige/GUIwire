@@ -75,9 +75,15 @@ the adaptive ATmega HEX is
 Both start at 9600 baud. After the initial GUI appears, the Host tests 19200,
 then 38400 and 57600 baud in normal request/response slots. It verifies each
 step with three valid display `POLL` responses and retains the scene during
-rate recovery. On a failed step it returns to 9600 baud and postpones that
-rate for 30 seconds. 115200 is deliberately not advertised by this hardware
-demonstrator; the highest stable rate is determined by the actual link. To
+rate recovery. It requires a minute of clean 38400-baud traffic before trying
+57600. Per-session success/error counts and 1/2/4/8-minute retry pauses keep
+it at a proven rate when the upper rate is unreliable. One isolated bad or
+missing reply is tolerated; repeated intermittent errors trigger an
+acknowledged one-step downshift. An ambiguous rate transition or two entirely
+missing high-rate replies still requires a safe 9600-baud recovery. A new
+client starts with empty rate history and a fresh 9600-baud handshake. 115200
+is deliberately not advertised by this hardware demonstrator; the highest
+stable rate is determined by the actual link. To
 test a different fixed rate, pass `-DGUIWIRE_UART_BAUD=<rate>` and build the
 client with the same `BAUD` value.
 
@@ -157,7 +163,10 @@ initial snapshot. Keep
 `GUIWIRE_SERVER_DEBUG_DISPLAY` enabled when building; it is enabled by
 default. In the corrected 9600-baud build the debug heading reads
 `GUIWIRE PINFIX 9600`; the adaptive build reads `GUIWIRE ADAPTIVE`. The latter
-also shows `RATE`, `UP`, `DN` and `FAIL`; `BAUD` should advance step by step if
+also shows `RATE`, `UP`, `DN`, `FAIL`, `BEST` (highest proven rate this session)
+and `OK` (consecutive good replies at the current rate). `SEEN` and `ERR`
+count valid replies and detected frame/timeout errors at the displayed baud within this
+session; `UP`, `DN` and `FAIL` are cumulative diagnostics. `BAUD` should advance step by step if
 the physical link passes each test. `RATE RECOVER` means it is waiting for the
 client's 9600-baud fallback, not discarding the GUI.
 After a successful connection, `VALID` keeps increasing, `STATE` remains

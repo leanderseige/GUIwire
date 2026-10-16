@@ -10,7 +10,11 @@
 
 #define GUIWIRE_RATE_DISCOVERY_DELAY_MS 1500u
 #define GUIWIRE_RATE_STEP_INTERVAL_MS 5000u
-#define GUIWIRE_RATE_FAILED_RETRY_MS 30000u
+#define GUIWIRE_RATE_KNOWN_STEP_MS 1000u
+#define GUIWIRE_RATE_HIGH_PROBE_STABLE_MS 60000u
+#define GUIWIRE_RATE_RETRY_BASE_MS 60000u
+#define GUIWIRE_RATE_MIN_GOOD_RESPONSES 8u
+#define GUIWIRE_RATE_HIGH_MIN_GOOD_RESPONSES 64u
 #define GUIWIRE_RATE_FAST_RESPONSE_MS 200u
 #define GUIWIRE_RATE_ACK_TIMEOUT_MS 250u
 #define GUIWIRE_RATE_TRIAL_GOOD_RESPONSES 3u
@@ -38,6 +42,7 @@ static guiwire_status_t host_send(guiwire_host_t *host,
     uint32_t worst_wire_ms;
     if (st != GUIWIRE_STATUS_OK) return st;
     host->tx_frames++;
+    host->invalid_during_wait = false;
     configured_timeout = host->current_baud > host->io.base_baud
         ? GUIWIRE_RATE_FAST_RESPONSE_MS
         : default_or(host->io.response_timeout_ms, 120u);
@@ -85,18 +90,87 @@ static uint8_t common_baud_mask(const guiwire_host_t *host,
     return mask;
 }
 
+static int8_t rate_index(const guiwire_host_t *host, uint32_t baud) {
+    if (!host->io.supported_bauds) return -1;
+    uint8_t count = host->io.supported_baud_count;
+    if (count > 8u) count = 8u;
+    for (uint8_t i = 0u; i < count; ++i) {
+        if (host->io.supported_bauds[i] == baud) return (int8_t)i;
+    }
+    return -1;
+}
+
+static void host_reset_rate_history(guiwire_host_t *host) {
+    memset(host->rate_history, 0, sizeof(host->rate_history));
+    host->best_proven_baud = host->io.base_baud;
+    host->rate_stable_since_ms = host->now_ms;
+    host->rate_good_streak = 0u;
+    host->failed_rate = 0u;
+    host->failed_rate_retry_ms = 0u;
+    host->observed_invalid_frames = host->link.invalid_frames;
+    host->invalid_during_wait = false;
+}
+
+static void host_note_rate_error(guiwire_host_t *host) {
+    int8_t index = rate_index(host, host->current_baud);
+    if (index >= 0 && host->rate_history[index].errors != UINT16_MAX) {
+        host->rate_history[index].errors++;
+    }
+    host->rate_good_streak = 0u;
+    host->rate_stable_since_ms = host->now_ms;
+}
+
+static void host_note_rate_failure(guiwire_host_t *host, uint32_t baud) {
+    int8_t index = rate_index(host, baud);
+    if (baud <= host->io.base_baud || index < 0) return;
+    guiwire_rate_history_t *history = &host->rate_history[index];
+    /* 1, 2, 4, 8 minutes: bad upper rates are retried, but not incessantly. */
+    if (history->failed_trials < 4u) history->failed_trials++;
+    history->retry_after_ms = host->now_ms +
+        (GUIWIRE_RATE_RETRY_BASE_MS << (history->failed_trials - 1u));
+    host->failed_rate = baud;
+    host->failed_rate_retry_ms = history->retry_after_ms;
+    host->rate_stable_since_ms = host->now_ms;
+    host->rate_good_streak = 0u;
+}
+
+static uint32_t next_rate_delay_ms(const guiwire_host_t *host) {
+    return host->current_baud < host->best_proven_baud
+        ? GUIWIRE_RATE_KNOWN_STEP_MS : GUIWIRE_RATE_STEP_INTERVAL_MS;
+}
+
 static uint32_t next_higher_baud(const guiwire_host_t *host) {
     uint32_t selected = 0u;
+    uint32_t highest_common = 0u;
+    int8_t selected_index = -1;
+    int8_t current_index = rate_index(host, host->current_baud);
     uint8_t count = host->io.supported_baud_count;
     if (count > 8u) count = 8u;
     for (uint8_t i = 0u; i < count; ++i) {
         uint32_t baud = host->io.supported_bauds[i];
-        if (!(host->common_rate_mask & (1u << i)) || baud <= host->current_baud) continue;
-        if (!selected || baud < selected) selected = baud;
+        if (!(host->common_rate_mask & (1u << i))) continue;
+        if (baud > highest_common) highest_common = baud;
+        if (baud <= host->current_baud) continue;
+        if (!selected || baud < selected) {
+            selected = baud;
+            selected_index = (int8_t)i;
+        }
     }
     /* Do not skip a failed intermediate step to try an even faster one. */
-    if (selected == host->failed_rate &&
-        !deadline_reached(host->now_ms, host->failed_rate_retry_ms)) return 0u;
+    if (selected_index < 0) return 0u;
+    if (current_index < 0 ||
+        host->rate_history[current_index].good_responses <
+            GUIWIRE_RATE_MIN_GOOD_RESPONSES ||
+        host->rate_good_streak < GUIWIRE_RATE_MIN_GOOD_RESPONSES) return 0u;
+    if (host->rate_history[selected_index].failed_trials &&
+        !deadline_reached(host->now_ms,
+                          host->rate_history[selected_index].retry_after_ms)) return 0u;
+    /* The upper edge of the demonstrated analogue link is exploratory.
+     * Require a long clean run at the lower rate, even after a prior success. */
+    if (selected == highest_common && selected > host->io.base_baud &&
+        (host->rate_good_streak < GUIWIRE_RATE_HIGH_MIN_GOOD_RESPONSES ||
+         host->now_ms - host->rate_stable_since_ms <
+             GUIWIRE_RATE_HIGH_PROBE_STABLE_MS)) return 0u;
     return selected;
 }
 
@@ -117,16 +191,15 @@ static void host_enter_rate_recovery(guiwire_host_t *host) {
      * rate, not against the slower destination that we never verified. */
     uint32_t failed = host->current_baud;
     if (host->pending_baud > failed) failed = host->pending_baud;
-    if (failed > host->io.base_baud) {
-        host->failed_rate = failed;
-        host->failed_rate_retry_ms = host->now_ms + GUIWIRE_RATE_FAILED_RETRY_MS;
-    }
+    host_note_rate_failure(host, failed);
     host->rate_failures++;
     host->rate_stage = GUIWIRE_RATE_RECOVER;
     host->waiting = GUIWIRE_HOST_IDLE;
     host->missed_responses = 0u;
     host->pending_baud = 0u;
     host->rate_downshift_requested = false;
+    host->invalid_during_wait = false;
+    host->trial_bad_responses = 0u;
     /* Remain silent long enough for the Device's high-rate watchdog to
      * return to the mandatory startup rate without losing its GUI queue. */
     host->recovery_until_ms = host->now_ms + baud_fallback_ms(host) + 50u;
@@ -145,10 +218,13 @@ static void host_disconnect(guiwire_host_t *host) {
     host->rate_stage = GUIWIRE_RATE_OFF;
     host->common_rate_mask = 0u;
     host->rate_downshift_requested = false;
+    host->invalid_during_wait = false;
     host->trial_good_responses = 0u;
+    host->trial_bad_responses = 0u;
     host->rate_error_score = 0u;
     host->pending_baud = 0u;
     guiwire_link_reset(&host->link);
+    host_reset_rate_history(host);
     (void)guiwire_server_reset_scene(&host->server);
     host_refresh_time(host);
     /* The peer has just transmitted MISMATCH; let its TX/echo guard expire
@@ -194,9 +270,10 @@ static void host_packet(void *ctx, const uint8_t *packet, size_t len) {
         host->common_rate_mask = 0u;
         host->rate_error_score = 0u;
         host->rate_downshift_requested = false;
-        host->failed_rate = 0u;
+        host->trial_bad_responses = 0u;
         (void)guiwire_server_reset_scene(&host->server);
         host_refresh_time(host);
+        host_reset_rate_history(host);
         host->last_valid_ms = host->now_ms;
         host->next_rate_action_ms = host->now_ms + GUIWIRE_RATE_DISCOVERY_DELAY_MS;
         host->next_action_ms = host->now_ms + baud_guard_ms(host);
@@ -256,8 +333,11 @@ static void host_packet(void *ctx, const uint8_t *packet, size_t len) {
         host->waiting = GUIWIRE_HOST_IDLE;
         host->rate_stage = GUIWIRE_RATE_TRIAL;
         host->trial_good_responses = 0u;
+        host->trial_bad_responses = 0u;
         host->rate_error_score = 0u;
         host->pending_baud = 0u;
+        host->rate_stable_since_ms = host->now_ms;
+        host->rate_good_streak = 0u;
         host->next_action_ms = host->now_ms + baud_guard_ms(host);
         return;
     }
@@ -343,6 +423,14 @@ static void host_packet(void *ctx, const uint8_t *packet, size_t len) {
     host->missed_responses = 0u;
     host->waiting = GUIWIRE_HOST_IDLE;
     host->next_action_ms = host->now_ms + default_or(host->io.poll_interval_ms, 100u);
+    host->invalid_during_wait = false;
+    {
+        int8_t index = rate_index(host, host->current_baud);
+        if (index >= 0 && host->rate_history[index].good_responses != UINT16_MAX) {
+            host->rate_history[index].good_responses++;
+        }
+        if (host->rate_good_streak != UINT16_MAX) host->rate_good_streak++;
+    }
     if (effective_command == GUIWIRE_CMD_DESTROY_ALL_OBJECTS) {
         host->initial_sync = false;
     }
@@ -351,17 +439,19 @@ static void host_packet(void *ctx, const uint8_t *packet, size_t len) {
             host->rate_stage = GUIWIRE_RATE_READY;
             if (host->trial_was_downshift) {
                 host->rate_downshifts++;
-                host->failed_rate = host->previous_baud;
-                host->failed_rate_retry_ms = host->now_ms + GUIWIRE_RATE_FAILED_RETRY_MS;
-                host->next_rate_action_ms = host->failed_rate_retry_ms;
+                host_note_rate_failure(host, host->previous_baud);
+                host->next_rate_action_ms = host->now_ms + next_rate_delay_ms(host);
             } else {
                 host->rate_upshifts++;
-                host->next_rate_action_ms = host->now_ms + GUIWIRE_RATE_STEP_INTERVAL_MS;
+                if (host->current_baud > host->best_proven_baud) {
+                    host->best_proven_baud = host->current_baud;
+                }
+                host->next_rate_action_ms = host->now_ms + next_rate_delay_ms(host);
             }
         }
     } else if (host->rate_stage == GUIWIRE_RATE_VERIFY_BASE) {
         host->rate_stage = host->common_rate_mask ? GUIWIRE_RATE_READY : GUIWIRE_RATE_OFF;
-        host->next_rate_action_ms = host->now_ms + GUIWIRE_RATE_STEP_INTERVAL_MS;
+        host->next_rate_action_ms = host->now_ms + next_rate_delay_ms(host);
     }
     if (host->rate_error_score) host->rate_error_score--;
 }
@@ -378,6 +468,7 @@ guiwire_status_t guiwire_host_init(guiwire_host_t *host,
     memset(host, 0, sizeof(*host));
     host->io = *io;
     host->current_baud = host->io.base_baud;
+    host->best_proven_baud = host->io.base_baud;
     st = guiwire_server_init(&host->server, server_cfg);
     if (st != GUIWIRE_STATUS_OK) return st;
     st = guiwire_server_show_waiting(&host->server);
@@ -419,11 +510,20 @@ void guiwire_host_tick(guiwire_host_t *host, uint32_t now_ms) {
 
     if (host->link.invalid_frames != host->observed_invalid_frames) {
         host->observed_invalid_frames = host->link.invalid_frames;
-        if (host->rate_stage == GUIWIRE_RATE_TRIAL) host->trial_good_responses = 0u;
+        if (host->waiting == GUIWIRE_HOST_WAIT_POLL) host->invalid_during_wait = true;
+        host_note_rate_error(host);
+        if (host->rate_stage == GUIWIRE_RATE_TRIAL) {
+            host->trial_good_responses = 0u;
+            if (host->waiting == GUIWIRE_HOST_WAIT_POLL &&
+                host->trial_bad_responses < 2u) host->trial_bad_responses++;
+            if (host->trial_bad_responses >= 2u) {
+                host->rate_downshift_requested = true;
+            }
+        }
         if (host->rate_error_score < 3u) host->rate_error_score++;
         if (host->rate_stage == GUIWIRE_RATE_READY &&
             host->current_baud > host->io.base_baud &&
-            host->rate_error_score >= 2u) {
+            host->rate_error_score >= 3u) {
             host->rate_downshift_requested = true;
         }
     }
@@ -449,15 +549,28 @@ void guiwire_host_tick(guiwire_host_t *host, uint32_t now_ms) {
             host->next_action_ms = now_ms + default_or(host->io.discovery_interval_ms, 100u);
         } else {
             host->waiting = GUIWIRE_HOST_IDLE;
-            if (host->rate_stage == GUIWIRE_RATE_TRIAL) host->trial_good_responses = 0u;
-            if (host->rate_error_score < 2u) host->rate_error_score = 2u;
+            if (!host->invalid_during_wait) {
+                host_note_rate_error(host);
+                host->rate_error_score = host->rate_error_score < 2u
+                    ? (uint8_t)(host->rate_error_score + 2u) : 3u;
+                if (host->rate_stage == GUIWIRE_RATE_TRIAL &&
+                    host->trial_bad_responses < 2u) host->trial_bad_responses++;
+            }
+            host->invalid_during_wait = false;
+            if (host->rate_stage == GUIWIRE_RATE_TRIAL) {
+                host->trial_good_responses = 0u;
+                if (host->trial_bad_responses >= 2u) {
+                    host->rate_downshift_requested = true;
+                }
+            }
             if (host->rate_stage == GUIWIRE_RATE_READY &&
-                host->current_baud > host->io.base_baud) {
+                host->current_baud > host->io.base_baud &&
+                host->rate_error_score >= 3u) {
                 host->rate_downshift_requested = true;
             }
             if (host->current_baud == host->io.base_baud &&
                 host->rate_stage == GUIWIRE_RATE_READY) {
-                host->next_rate_action_ms = now_ms + GUIWIRE_RATE_FAILED_RETRY_MS;
+                host->next_rate_action_ms = now_ms + GUIWIRE_RATE_RETRY_BASE_MS;
             }
             host->missed_responses++;
             if (host->rate_stage == GUIWIRE_RATE_VERIFY_BASE && host->missed_responses >= 2u) {
@@ -494,7 +607,9 @@ void guiwire_host_tick(guiwire_host_t *host, uint32_t now_ms) {
     }
 
     if (host->connected && !host->initial_sync &&
-        host->rate_stage == GUIWIRE_RATE_READY) {
+        (host->rate_stage == GUIWIRE_RATE_READY ||
+         (host->rate_stage == GUIWIRE_RATE_TRIAL &&
+          host->rate_downshift_requested))) {
         if (host->rate_downshift_requested && host->missed_responses == 0u &&
             host->current_baud > host->io.base_baud) {
             host->rate_downshift_requested = false;
@@ -502,9 +617,10 @@ void guiwire_host_tick(guiwire_host_t *host, uint32_t now_ms) {
             if (st != GUIWIRE_STATUS_OK) host_disconnect(host);
             return;
         }
-        if (deadline_reached(now_ms, host->next_rate_action_ms)) {
+        if (host->rate_stage == GUIWIRE_RATE_READY &&
+            deadline_reached(now_ms, host->next_rate_action_ms)) {
             uint32_t next = next_higher_baud(host);
-            host->next_rate_action_ms = now_ms + GUIWIRE_RATE_STEP_INTERVAL_MS;
+            host->next_rate_action_ms = now_ms + next_rate_delay_ms(host);
             if (next) {
                 st = host_request_baud(host, next);
                 if (st != GUIWIRE_STATUS_OK) host_disconnect(host);

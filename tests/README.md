@@ -36,16 +36,20 @@ cc -std=c11 -O2 -DGUIWIRE_DEVICE_QUEUE_CAPACITY=9u \
 ```
 
 It uses reliable sessions and keeps ring updates flowing while testing successful upshifts, a failed
-rate, lost acknowledgements on up- and downshifts, downshifts after a missing
-response or a CRC error, a fixed-rate Device that remains at 9600 baud, and a retry after the
-30-second cooldown. The simulated bus enforces matching baud settings but
+rate, lost acknowledgements on up- and downshifts, tolerance of a single missing
+or CRC-corrupt response, a controlled downshift after intermittent loss or
+corruption during a trial, a
+fixed-rate Device that remains at 9600 baud, a
+minute-long clean run before probing 57600, and escalating 1/2/4/8-minute
+per-rate retry intervals after failures. The simulated bus enforces matching baud settings but
 cannot establish that the
 discrete transceiver passes a particular bitrate on real hardware.
 
 The hot-patch test exercises delayed cable insertion, lost and CRC-corrupt
 GUI responses, duplicate suppression, local debug-view caching and a switch
 to an already-active second client while debug is held,
-unplug/replug and a high-rate-to-base-rate client switch:
+unplug/replug, a high-rate-to-base-rate client switch and a switch *during*
+`SET_BAUD`; both discard the previous client's rate history:
 
 ```sh
 cc -std=c11 -O2 -DGUIWIRE_DEVICE_QUEUE_CAPACITY=9u \

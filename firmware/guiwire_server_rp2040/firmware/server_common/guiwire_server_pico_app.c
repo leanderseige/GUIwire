@@ -249,6 +249,23 @@ static void debug_redraw(guiwire_host_t *host, const guiwire_pico_uart_t *uart,
     (void)snprintf(line, sizeof(line), "UP %" PRIu32 " DN %" PRIu32 " FAIL %" PRIu32,
                    host->rate_upshifts, host->rate_downshifts, host->rate_failures);
     debug_draw_line(server, 184u, line, guiwire_rgb565(255u, 255u, 0u));
+#if GUIWIRE_ENABLE_BAUD_NEGOTIATION
+    uint16_t rate_good = 0u;
+    uint16_t rate_errors = 0u;
+    for (uint8_t i = 0u; i < host->io.supported_baud_count && i < 8u; ++i) {
+        if (host->io.supported_bauds[i] == host->current_baud) {
+            rate_good = host->rate_history[i].good_responses;
+            rate_errors = host->rate_history[i].errors;
+            break;
+        }
+    }
+    (void)snprintf(line, sizeof(line), "BEST %" PRIu32 " OK %u",
+                   host->best_proven_baud, (unsigned)host->rate_good_streak);
+    debug_draw_line(server, 200u, line, guiwire_rgb565(255u, 255u, 0u));
+    (void)snprintf(line, sizeof(line), "SEEN %u ERR %u",
+                   (unsigned)rate_good, (unsigned)rate_errors);
+    debug_draw_line(server, 216u, line, guiwire_rgb565(255u, 255u, 0u));
+#endif
     (void)guiwire_server_flush(server);
     server->cfg.renderer = saved_renderer;
 }

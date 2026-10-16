@@ -69,6 +69,14 @@ typedef enum {
     GUIWIRE_RATE_VERIFY_BASE
 } guiwire_rate_stage_t;
 
+/* Volatile, per-session observations. Indexed by io.supported_bauds (at most 8). */
+typedef struct {
+    uint16_t good_responses;
+    uint16_t errors;
+    uint8_t failed_trials;
+    uint32_t retry_after_ms;
+} guiwire_rate_history_t;
+
 typedef struct {
     guiwire_server_t server;
     guiwire_link_t link;
@@ -92,16 +100,22 @@ typedef struct {
     guiwire_rate_stage_t rate_stage;
     uint8_t common_rate_mask;
     uint8_t trial_good_responses;
+    uint8_t trial_bad_responses;
     uint8_t rate_error_score;
     uint32_t next_rate_action_ms;
     uint32_t recovery_until_ms;
     uint32_t failed_rate_retry_ms;
     uint32_t failed_rate;
+    guiwire_rate_history_t rate_history[8];
+    uint32_t best_proven_baud;
+    uint32_t rate_stable_since_ms;
+    uint16_t rate_good_streak;
     uint32_t observed_invalid_frames;
     uint32_t rate_upshifts;
     uint32_t rate_downshifts;
     uint32_t rate_failures;
     bool rate_downshift_requested;
+    bool invalid_during_wait;
     bool trial_was_downshift;
     bool reliable_session;
     bool session_token_valid;

@@ -94,6 +94,8 @@ transceiver; the display bus remains local to the Host module.
 - `firmware/guiwire_server_rp2040`: Host/server firmware for an ILI9488 and
   SSD1306 displays, plus a 240×240 ST7789 target for the Waveshare RP2040
   Zero. The SSD1306 project emits both `128x32` and `128x64` firmware targets.
+- `firmware/guiwire_server_esp32s3`: ESP-IDF Host/server for the Waveshare
+  ESP32-S3-Touch-AMOLED-2.41 (selectable V1/V2 PCB revision, 600×450 AMOLED).
 - `firmware/guiwire_demo_client_rp2040`: RP2040 Device demo client.
 - `firmware/guiwire_demo_ssd1306_rp2040`: standalone 128×32 SSD1306 SPI
   display smoke-test firmware for checking a module without a second GUIwire
@@ -104,6 +106,7 @@ transceiver; the display bus remains local to the Host module.
 Build- und Upload-Anleitungen stehen direkt bei den Projekten:
 
 - [`firmware/guiwire_server_rp2040/README.md`](firmware/guiwire_server_rp2040/README.md)
+- [`firmware/guiwire_server_esp32s3/README.md`](firmware/guiwire_server_esp32s3/README.md)
 - [`firmware/guiwire_demo_client_rp2040/README.md`](firmware/guiwire_demo_client_rp2040/README.md)
 - [`firmware/guiwire_demo_ssd1306_rp2040/README.md`](firmware/guiwire_demo_ssd1306_rp2040/README.md)
 - [`firmware/guiwire_demo_client_atmega328p/README.md`](firmware/guiwire_demo_client_atmega328p/README.md)

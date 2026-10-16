@@ -401,6 +401,12 @@ token, it replies `SESSION_MISMATCH`; the Host clears its old scene and begins
 a new `PING` handshake. This detects a client swap without waiting for an
 unplug timeout, even if the new Device was already active. At a different
 baud rate, the Host first returns to 9600 baud through the silent fallback.
+Any rate observations used to optimize a connection belong to that session:
+after a confirmed disconnect or client change, the Host discards them and
+starts the new client at 9600 baud. A transient packet error is not itself
+evidence of a different client. Without a separate presence signal, cable
+removal cannot be recognized at the exact instant it happens; the Host uses
+bounded response timeouts and the base-rate handshake to identify the peer.
 
 Once the new Device has answered `PING`, its first queued GUI packet must be
 `DESTROY_ALL_OBJECTS`, followed by `HELLO_STRING`, the complete current
@@ -813,8 +819,11 @@ higher rate at a time, in ascending order. Normal `POLL` exchanges continue
 between negotiation frames; three consecutive valid responses at the new rate
 confirm each step. This is testing during operation, **not** simultaneous use
 of two baud rates on the wire. Each participant changes its UART only at the
-acknowledged turn boundary. After a successful step, the reference Host waits
-5 seconds before testing the next one.
+acknowledged turn boundary. The Host counts valid and erroneous replies per
+rate within the current session. It normally waits at least 5 seconds before
+another step and requires 60 seconds of clean operation at the lower rate
+before probing 57600 baud. After a recovery it may re-ascend through previously
+confirmed lower rates sooner, but each step is still acknowledged and tested.
 
 The Device keeps a watchdog while operating above 9600 baud. If it receives
 no valid Host frame for the negotiated fallback interval, it silently returns
@@ -825,10 +834,14 @@ requests, the Host waits for that fallback interval plus a margin, switches
 itself to 9600 baud and verifies communication with `POLL`. The existing GUI
 remains visible during this trial and recovery; only a failed base-rate
 verification ends the session and starts fresh discovery. A rate that failed
-or was stepped down is not retried for 30 seconds. Valid but degraded
-high-rate communication may be stepped down one common rate using the same
-`SET_BAUD`/`BAUD_ACK` handshake. Independent implementations must coordinate
-their fallback and session timeouts accordingly.
+or was stepped down is retried after successively longer pauses of 1, 2, 4
+and up to 8 minutes within that session. One corrupt or missing `POLL` reply
+does not trigger a rate change; repeated errors with successful exchanges in
+between may cause a confirmed one-step downshift using the same
+`SET_BAUD`/`BAUD_ACK` handshake. When the ACK or both high-rate replies are
+missing, the peers cannot safely assume the same rate and use the 9600-baud
+fallback instead. Independent implementations must coordinate their fallback
+and session timeouts accordingly.
 
 The physical interface should be designed with significantly higher rates in
 mind.
